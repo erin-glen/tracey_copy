@@ -106,6 +106,16 @@ def render(
     if "timestamp" in df.columns:
         df = df.sort_values("timestamp", na_position="last")
 
+    if "timestamp" in df.columns:
+        ts_parsed = df["timestamp"].dropna()
+        if len(df) and not len(ts_parsed):
+            st.warning("No timestamps could be parsed from the fetched traces; daily charts may be incomplete.")
+        elif len(ts_parsed):
+            st.caption(
+                f"Timestamp coverage: {len(ts_parsed):,}/{len(df):,} parsed. "
+                f"Range: {ts_parsed.min()} → {ts_parsed.max()}"
+            )
+
     if "prompt" in df.columns:
         df["prompt_len_chars"] = df["prompt"].fillna("").astype("string").map(lambda x: len(str(x)))
         df["prompt_len_words"] = (

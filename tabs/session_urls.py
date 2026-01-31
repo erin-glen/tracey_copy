@@ -5,7 +5,13 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
-from utils import csv_bytes_any, normalize_trace_format, save_bytes_to_local_path
+from utils import (
+    csv_bytes_any,
+    normalize_trace_format,
+    save_bytes_to_local_path,
+    parse_trace_dt,
+    first_human_prompt,
+)
 
 
 def render(
@@ -33,10 +39,19 @@ def render(
         if sid and sid not in session_ids:
             session_ids.add(sid)
             url = f"{base_thread_url.rstrip('/')}/{sid}"
-            rows.append({
-                "session_id": sid,
-                "url": url,
-            })
+            dt = parse_trace_dt(n)
+            prompt = first_human_prompt(n)
+            prompt_one_line = " ".join(str(prompt or "").split())
+            prompt_snippet = prompt_one_line[:120]
+            if len(prompt_one_line) > len(prompt_snippet):
+                prompt_snippet = f"{prompt_snippet}…"
+            rows.append(
+                {
+                    "timestamp": dt,
+                    "prompt_snippet": prompt_snippet,
+                    "url": url,
+                }
+            )
 
     if not rows:
         st.warning("No sessions found in the fetched traces.")
@@ -45,10 +60,10 @@ def render(
     st.write(f"**{len(rows)}** unique conversation threads")
 
     df = pd.DataFrame(rows)
-    df["link"] = df["url"].apply(lambda u: f'<a href="{u}" target="_blank">{u}</a>')
+    df["link"] = df["url"].apply(lambda u: f'<a href="{u}" target="_blank">Open</a>')
 
     st.markdown(
-        df[["session_id", "link"]].to_html(escape=False, index=False),
+        df[["timestamp", "prompt_snippet", "link"]].to_html(escape=False, index=False),
         unsafe_allow_html=True,
     )
 

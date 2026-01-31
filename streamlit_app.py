@@ -1,6 +1,8 @@
 import os
 from datetime import date, datetime, time, timedelta, timezone
+import inspect
 from pathlib import Path
+from typing import Any
 
 import streamlit as st
 
@@ -16,7 +18,6 @@ from utils import (
     normalize_trace_format,
     parse_trace_dt,
     final_ai_message,
-    save_bytes_to_local_path,
 )
 from tabs import (
     render_session_urls,
@@ -164,17 +165,6 @@ section[data-testid="stSidebar"] div[data-testid="stDownloadButton"] button:hove
 
                 raw_csv_bytes = csv_bytes_any(out_rows)
 
-                if st.button("💾 Save raw csv", key="raw_csv_save_disk", use_container_width=True):
-                    try:
-                        out_path = save_bytes_to_local_path(
-                            raw_csv_bytes,
-                            str(st.session_state.get("csv_export_path") or ""),
-                            "gnw_traces_raw.csv",
-                        )
-                        st.toast(f"Saved: {out_path}")
-                    except Exception as e:
-                        st.error(f"Could not save: {e}")
-
                 st.download_button(
                     label="⬇️ Download raw csv",
                     data=raw_csv_bytes,
@@ -187,6 +177,13 @@ section[data-testid="stSidebar"] div[data-testid="stDownloadButton"] button:hove
                 st.button("⬇️ Download raw csv", disabled=True, use_container_width=True)
 
         fetch_status = st.empty()
+
+        with st.expander("🔎 Fetch debug (Langfuse API)", expanded=False):
+            dbg = st.session_state.get("fetch_debug")
+            if isinstance(dbg, dict) and dbg:
+                st.json(dbg)
+            else:
+                st.caption("Fetch traces to populate request/response metadata.")
 
         st.markdown("---")
 
@@ -217,6 +214,14 @@ section[data-testid="stSidebar"] div[data-testid="stDownloadButton"] button:hove
                 max_value=500,
                 value=50,
                 key="stats_page_limit",
+            )
+            stats_page_size = st.number_input(
+                "Traces per page",
+                min_value=1,
+                max_value=5000,
+                value=1000,
+                key="stats_page_size",
+                help="This is the API page size (per request). It is not the overall max; that's controlled by 'Max traces'.",
             )
             stats_max_traces = st.number_input(
                 "Max traces",
@@ -253,18 +258,65 @@ section[data-testid="stSidebar"] div[data-testid="stDownloadButton"] button:hove
                     from_iso = iso_utc(datetime.combine(start_date, time.min).replace(tzinfo=timezone.utc))
                     to_iso = iso_utc(datetime.combine(end_date, time.max).replace(tzinfo=timezone.utc))
                     with fetch_status.status("Fetching traces...", expanded=False):
-                        traces = fetch_traces_window(
-                            base_url=base_url,
-                            headers=headers,
-                            from_iso=from_iso,
-                            to_iso=to_iso,
-                            envs=envs,
-                            page_limit=int(stats_page_limit),
-                            max_traces=int(stats_max_traces),
-                            retry=2,
-                            backoff=0.5,
-                        )
+                        fetch_debug: dict[str, Any] = {}
+                        sig = None
+                        try:
+                            sig = inspect.signature(fetch_traces_window)
+                        except Exception:
+                            sig = None
+
+                        supports_debug_out = bool(sig and "debug_out" in sig.parameters)
+                        supports_page_size = bool(sig and "page_size" in sig.parameters)
+
+                        call_kwargs: dict[str, Any] = {
+                            "base_url": base_url,
+                            "headers": headers,
+                            "from_iso": from_iso,
+                            "to_iso": to_iso,
+                            "envs": envs,
+                            "page_limit": int(stats_page_limit),
+                            "max_traces": int(stats_max_traces),
+                            "retry": 2,
+                            "backoff": 0.5,
+                        }
+                        if supports_page_size:
+                            call_kwargs["page_size"] = int(stats_page_size)
+
+                        if supports_debug_out:
+                            call_kwargs["debug_out"] = fetch_debug
+
+                        if supports_debug_out or supports_page_size:
+                            traces = fetch_traces_window(
+                                **call_kwargs,
+                            )
+                        else:
+                            # Fallback for older function objects (e.g. Streamlit hot-reload holding
+                            # an older signature). You can restart Streamlit to pick up debug support.
+                            fetch_debug.update(
+                                {
+                                    "url": f"{base_url.rstrip('/')}/api/public/traces",
+                                    "from_iso": from_iso,
+                                    "to_iso": to_iso,
+                                    "envs": envs,
+                                    "page_limit": int(stats_page_limit),
+                                    "page_size": int(stats_page_size),
+                                    "max_traces": int(stats_max_traces),
+                                    "note": "fetch_traces_window() does not support debug_out in this runtime; restart Streamlit to enable per-page debug.",
+                                }
+                            )
+                            traces = fetch_traces_window(
+                                base_url=base_url,
+                                headers=headers,
+                                from_iso=from_iso,
+                                to_iso=to_iso,
+                                envs=envs,
+                                page_limit=int(stats_page_limit),
+                                max_traces=int(stats_max_traces),
+                                retry=2,
+                                backoff=0.5,
+                            )
                         fetch_status.status(f"Fetched {len(traces)} traces", state="complete", expanded=False)
+                    st.session_state.fetch_debug = fetch_debug
                     st.session_state.stats_traces = traces
                     st.rerun()
 

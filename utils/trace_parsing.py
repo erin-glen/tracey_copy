@@ -2,7 +2,7 @@
 
 import re
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 
@@ -29,13 +29,27 @@ def parse_trace_dt(row: dict[str, Any]) -> datetime | None:
     raw = row.get("timestamp") or row.get("createdAt") or row.get("created_at")
     if isinstance(raw, datetime):
         return raw
+    if isinstance(raw, (int, float)):
+        try:
+            ts = float(raw)
+            if ts > 10_000_000_000:
+                ts = ts / 1000.0
+            return datetime.fromtimestamp(ts, tz=timezone.utc)
+        except Exception:
+            return None
     if not isinstance(raw, str) or not raw.strip():
         return None
     s = raw.strip()
     try:
         if s.endswith("Z"):
             s = s[:-1] + "+00:00"
-        return datetime.fromisoformat(s)
+        try:
+            return datetime.fromisoformat(s)
+        except ValueError:
+            s2 = s.replace(" ", "T")
+            if s2.endswith("Z"):
+                s2 = s2[:-1] + "+00:00"
+            return datetime.fromisoformat(s2)
     except Exception:
         return None
 
