@@ -1,6 +1,7 @@
 """Human evaluation sampling tab."""
 
 import random
+import re
 import time
 from typing import Any
 
@@ -19,12 +20,24 @@ def _extract_helper_info(trace: dict[str, Any]) -> dict[str, Any]:
     """Extract AOIs, datasets, and tool names from trace for eval context."""
     aois: list[str] = []
     datasets: list[str] = []
+    datasets_analysed: list[str] = []
     tools_used: list[str] = []
+    aoi_name = ""
+    aoi_type = ""
 
     out_msgs = ((trace.get("output") or {}).get("messages") or [])
     for m in out_msgs:
         if not isinstance(m, dict):
             continue
+
+        if m.get("type") == "tool" and m.get("name") == "pick_aoi":
+            # Example: "Selected AOI: Kalimantan Barat, Indonesia, type: state-province"
+            content = str(m.get("content") or "")
+            m_aoi = re.search(r"Selected AOI:\s*(.*?)(?:,\s*type:\s*(.*))?$", content)
+            if m_aoi:
+                aoi_name = (m_aoi.group(1) or "").strip()
+                aoi_type = (m_aoi.group(2) or "").strip()
+
         # Collect tool call names and args
         for tc in (m.get("tool_calls") or []):
             if not isinstance(tc, dict):
@@ -45,10 +58,25 @@ def _extract_helper_info(trace: dict[str, Any]) -> dict[str, Any]:
                     if v and str(v).strip() and str(v).strip() not in datasets:
                         datasets.append(str(v).strip())
 
+    try:
+        # Prefer explicit API URLs if they exist anywhere in output payload.
+        # We key off the path segment after "land_change/" (e.g. "dist_alerts").
+        output_str = str(trace.get("output") or "")
+        hits = re.findall(r"/land_change/([^/]+)/", output_str)
+        for h in hits:
+            h = str(h).strip()
+            if h and h not in datasets_analysed:
+                datasets_analysed.append(h)
+    except Exception:
+        pass
+
     return {
         "aois": aois,
         "datasets": datasets,
+        "datasets_analysed": datasets_analysed,
         "tools_used": tools_used,
+        "aoi_name": aoi_name,
+        "aoi_type": aoi_type,
     }
 
 ENCOURAGEMENT_MESSAGES = [
@@ -152,7 +180,10 @@ def render(
                         "answer": answer,
                         "aois": helper_info.get("aois", []),
                         "datasets": helper_info.get("datasets", []),
+                        "datasets_analysed": helper_info.get("datasets_analysed", []),
                         "tools_used": helper_info.get("tools_used", []),
+                        "aoi_name": helper_info.get("aoi_name", ""),
+                        "aoi_type": helper_info.get("aoi_type", ""),
                     }
                 )
 
@@ -286,11 +317,14 @@ Thank you for your contribution! 🙏
         # Helper info expander (collapsed by default)
         aois = row.get("aois") or []
         datasets = row.get("datasets") or []
+        datasets_analysed = row.get("datasets_analysed") or []
         tools_used = row.get("tools_used") or []
-        has_helper_info = aois or datasets or tools_used
+        aoi_name = str(row.get("aoi_name") or "")
+        aoi_type = str(row.get("aoi_type") or "")
+        has_helper_info = aois or datasets or datasets_analysed or tools_used or aoi_name or aoi_type
         if has_helper_info:
             with st.expander("📋 Context Helper", expanded=False):
-                cols = st.columns(3)
+                cols = st.columns(4)
                 with cols[0]:
                     st.caption("**AOIs Considered**")
                     st.write(", ".join(aois) if aois else "—")
@@ -298,8 +332,15 @@ Thank you for your contribution! 🙏
                     st.caption("**Datasets Considered**")
                     st.write(", ".join(datasets) if datasets else "—")
                 with cols[2]:
+                    st.caption("**Datasets analysed**")
+                    st.write(", ".join(datasets_analysed) if datasets_analysed else "—")
+                with cols[3]:
                     st.caption("**Tools Selected**")
                     st.write(", ".join(tools_used) if tools_used else "—")
+
+                if aoi_name or aoi_type:
+                    st.caption("**AOI selected**")
+                    st.write(f"{aoi_name} ({aoi_type})".strip() if aoi_name or aoi_type else "—")
 
     if is_expanded:
         toggle_cols = st.columns([1, 1, 6])
@@ -366,9 +407,9 @@ Thank you for your contribution! 🙏
         notes = st.text_area(
             "📝 Notes (optional)",
             value=existing.get("notes", ""),
-            height=60,
+            height=120,
             key="_eval_notes",
-            placeholder="Add notes...",
+            placeholder="Add notes about the your rating...",
         )
 
         nav_c1, nav_c2, nav_c3 = st.columns([1, 1, 2])

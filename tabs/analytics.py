@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 import time as time_mod
 from pathlib import Path
 from typing import Any
@@ -52,7 +53,7 @@ def render(
     stats_max_traces: int,
 ) -> None:
     """Render the Trace Analytics Reports tab."""
-    st.subheader("High-level stats for selected date range")
+    st.subheader("Trace stats for selected date range")
 
     if "stats_traces" not in st.session_state:
         st.session_state.stats_traces = []
@@ -78,6 +79,31 @@ def render(
         answer = final_ai_message(n)
         dt = parse_trace_dt(n)
         outcome = classify_outcome(n, answer or "")
+
+        aoi_name = ""
+        aoi_type = ""
+        out_msgs = ((n.get("output") or {}).get("messages") or [])
+        for m in out_msgs:
+            if not isinstance(m, dict):
+                continue
+            if m.get("type") == "tool" and m.get("name") == "pick_aoi":
+                content = str(m.get("content") or "")
+                m_aoi = re.search(r"Selected AOI:\s*(.*?)(?:,\s*type:\s*(.*))?$", content)
+                if m_aoi:
+                    aoi_name = (m_aoi.group(1) or "").strip()
+                    aoi_type = (m_aoi.group(2) or "").strip()
+
+        datasets_analysed: list[str] = []
+        try:
+            output_str = str(n.get("output") or "")
+            hits = re.findall(r"/land_change/([^/]+)/", output_str)
+            for h in hits:
+                h = str(h).strip()
+                if h and h not in datasets_analysed:
+                    datasets_analysed.append(h)
+        except Exception:
+            pass
+
         rows.append(
             {
                 "trace_id": n.get("id"),
@@ -91,6 +117,9 @@ def render(
                 "outcome": outcome,
                 "prompt": prompt,
                 "answer": answer,
+                "aoi_name": aoi_name,
+                "aoi_type": aoi_type,
+                "datasets_analysed": ", ".join(datasets_analysed),
             }
         )
 
@@ -829,6 +858,101 @@ def render(
             st.altair_chart(lang_chart, width="stretch")
         if cost_chart_dist:
             st.altair_chart(cost_chart_dist, width="stretch")
+
+    st.markdown("### GNW analysis usage")
+
+    pie_c1, pie_c2 = st.columns(2)
+    with pie_c1:
+        if "datasets_analysed" in df.columns:
+            chart = category_pie_chart(df["datasets_analysed"], "dataset", "Datasets analysed", explode_csv=True)
+            if chart:
+                st.altair_chart(chart, width="stretch")
+    with pie_c2:
+        aoi_type_domain: list[str] = []
+        if "aoi_type" in df.columns:
+            aoi_type_counts = (
+                df["aoi_type"]
+                .fillna("")
+                .astype(str)
+                .str.strip()
+                .replace({"": None})
+                .dropna()
+                .value_counts()
+                .head(10)
+            )
+            if len(aoi_type_counts):
+                aoi_type_domain = [str(x) for x in aoi_type_counts.index.tolist()]
+                aoi_type_df = aoi_type_counts.rename_axis("aoi_type").reset_index(name="count")
+                aoi_type_df["percent"] = (
+                    aoi_type_df["count"] / max(1, int(aoi_type_df["count"].sum())) * 100
+                ).round(1)
+                aoi_type_scale = alt.Scale(domain=aoi_type_domain, scheme="tableau10")
+                chart = (
+                    alt.Chart(aoi_type_df)
+                    .mark_arc(innerRadius=50)
+                    .encode(
+                        theta=alt.Theta("count:Q"),
+                        color=alt.Color("aoi_type:N", title="AOI type", scale=aoi_type_scale),
+                        tooltip=[
+                            alt.Tooltip("aoi_type:N", title="AOI type"),
+                            alt.Tooltip("count:Q", title="Count"),
+                            alt.Tooltip("percent:Q", title="%", format=".1f"),
+                        ],
+                    )
+                    .properties(title="AOI type", height=250)
+                )
+                st.altair_chart(chart, width="stretch")
+
+    if "aoi_name" in df.columns:
+        aoi_rows = df[["aoi_name", "aoi_type"]].copy() if "aoi_type" in df.columns else df[["aoi_name"]].copy()
+        aoi_rows["aoi_name"] = (
+            aoi_rows["aoi_name"].fillna("").astype(str).str.strip().replace({"": None})
+        )
+        if "aoi_type" in aoi_rows.columns:
+            aoi_rows["aoi_type"] = (
+                aoi_rows["aoi_type"].fillna("").astype(str).str.strip().replace({"": None})
+            )
+
+        aoi_rows = aoi_rows.dropna(subset=["aoi_name"])
+        if len(aoi_rows):
+            aoi_counts = aoi_rows["aoi_name"].value_counts().head(30)
+            aoi_name_df = aoi_counts.rename_axis("aoi_name").reset_index(name="count")
+            if "aoi_type" in aoi_rows.columns:
+                # Choose most common type per AOI name so the bar can be colored.
+                aoi_types = (
+                    aoi_rows.dropna(subset=["aoi_type"])
+                    .groupby("aoi_name")["aoi_type"]
+                    .agg(lambda s: s.value_counts().index[0] if len(s.value_counts()) else None)
+                    .reset_index()
+                )
+                aoi_name_df = aoi_name_df.merge(aoi_types, on="aoi_name", how="left")
+
+            enc_color = None
+            if "aoi_type" in aoi_name_df.columns and aoi_type_domain:
+                enc_color = alt.Color(
+                    "aoi_type:N",
+                    title="AOI type",
+                    scale=alt.Scale(domain=aoi_type_domain, scheme="tableau10"),
+                )
+            elif "aoi_type" in aoi_name_df.columns:
+                enc_color = alt.Color("aoi_type:N", title="AOI type")
+
+            chart = (
+                alt.Chart(aoi_name_df)
+                .mark_bar()
+                .encode(
+                    x=alt.X("count:Q", title="Count"),
+                    y=alt.Y("aoi_name:N", sort="-x", title="AOI"),
+                    color=enc_color,
+                    tooltip=[
+                        alt.Tooltip("aoi_name:N", title="AOI"),
+                        alt.Tooltip("aoi_type:N", title="AOI type"),
+                        alt.Tooltip("count:Q", title="Count", format=","),
+                    ],
+                )
+                .properties(title="AOI selection counts", height=420)
+            )
+            st.altair_chart(chart, width="stretch")
 
     if has_enrichment_cache and is_default_enrich_prompt:
         has_enrich_data = any(
