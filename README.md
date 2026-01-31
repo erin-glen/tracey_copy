@@ -68,8 +68,3 @@ In that tab, open **⚙️ LLM Settings** to configure:
 ### Editable prompts
 
 Each sub-tab exposes an **📝 Edit system prompt** expander so you can inspect and tweak the prompts used for Gemini.
-
-## (Optional) Run the Marimo notebook
-
-```bash
-uv run marimo edit gnw_trace_pull.py
