@@ -1118,7 +1118,7 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
         if any(c["has_ambiguity"] for c in calls):
             traces_with_ambiguity += 1
 
-    # 1A: Tool flow visualization
+    # Tool flow visualization
     st.markdown(
         "#### Tool call flow",
         help="Visualize how tool calls flow from START through tools to END. Line thickness = count, color = outcome status.",
@@ -1203,7 +1203,7 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
     else:
         st.info("No tool calls found in traces.")
 
-    # 1B: Tool success rate by tool name
+    # Tool success rate by tool name
     if all_tool_calls:
         st.markdown(
             "#### Tool success rate by tool",
@@ -1229,12 +1229,7 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
         if chart:
             st.altair_chart(chart, use_container_width=True)
 
-    # 1C: Ambiguity rate details (the pie is shown above next to Tool call flow)
-    if total_traces_with_tools > 0:
-        with st.expander("Clarification counts", expanded=False):
-            st.dataframe(clarity_df, hide_index=True, use_container_width=True)
-
-    # 2E: Reasoning tokens histogram
+    # Reasoning tokens histogram
     if "reasoning_ratio" in df.columns:
         reasoning_ratios = df["reasoning_ratio"].dropna()
         reasoning_ratios = reasoning_ratios[reasoning_ratios > 0]
@@ -1257,7 +1252,7 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
             if chart:
                 st.altair_chart(chart, use_container_width=True)
 
-    # 3G: Tool calls vs latency scatter
+    # Tool calls vs latency scatter
     if "tool_call_count" in df.columns and "latency_seconds" in df.columns:
         plot_df = df[["tool_call_count", "latency_seconds", "outcome"]].dropna()
         if len(plot_df) and plot_df["tool_call_count"].max() > 0:
@@ -1278,7 +1273,7 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
             if chart:
                 st.altair_chart(chart, use_container_width=True)
 
-    # 4J: Internal vs user-visible error rate (supplements outcome chart)
+    # Internal vs user-visible error rate (supplements outcome chart)
     if "has_internal_error" in df.columns and "outcome" in df.columns:
         st.markdown(
             "#### Internal vs user-visible errors",
@@ -1314,7 +1309,54 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
             )
             .properties(height=220)
         )
-        st.altair_chart(err_pie, width="stretch")
+
+        both_internal_and_user_visible = int(
+            ((df["has_internal_error"]) & (df["outcome"].isin(["ERROR", "SOFT_ERROR"]))).sum()
+        )
+        internal_only = int(internal_error_count - both_internal_and_user_visible)
+        user_visible_only = int(user_visible_error_count - both_internal_and_user_visible)
+        no_errors = int(
+            (
+                (~df["has_internal_error"]) & (~df["outcome"].isin(["ERROR", "SOFT_ERROR"]))
+            ).sum()
+        )
+
+        overlap_df = pd.DataFrame(
+            [
+                {"label": "No errors", "count": no_errors},
+                {"label": "Internal only", "count": internal_only},
+                {"label": "User-visible only", "count": user_visible_only},
+                {"label": "Both", "count": both_internal_and_user_visible},
+            ]
+        )
+        overlap_df = overlap_df[overlap_df["count"] > 0]
+        overlap_df["percent"] = overlap_df["count"] / max(1, int(overlap_df["count"].sum())) * 100
+
+        overlap_pie = (
+            alt.Chart(overlap_df)
+            .mark_arc(innerRadius=55)
+            .encode(
+                theta=alt.Theta("count:Q", title="Traces"),
+                color=alt.Color("label:N", title=""),
+                tooltip=[
+                    alt.Tooltip("label:N", title=""),
+                    alt.Tooltip("count:Q", title="Traces", format=","),
+                    alt.Tooltip("percent:Q", title="%", format=".1f"),
+                ],
+            )
+            .properties(height=220)
+        )
+
+        e_left, e_right = st.columns(2)
+        with e_left:
+            st.markdown("##### Internal errors", help="Share of traces with any internal tool/API error.")
+            st.altair_chart(err_pie, width="stretch")
+        with e_right:
+            st.markdown(
+                "##### Internal vs user-visible overlap",
+                help="How internal tool/API errors overlap with user-visible failures (ERROR/SOFT_ERROR).",
+            )
+            st.altair_chart(overlap_pie, width="stretch")
 
         with st.expander("Error metrics", expanded=False):
             ec1, ec2, ec3, ec4 = st.columns(4)
@@ -1326,16 +1368,6 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
                 st.metric("Agent recovered", f"{recovered:,}")
             with ec4:
                 st.metric("Hidden errors", f"{hidden_errors:,}")
-
-        # Breakdown table
-        error_breakdown = pd.DataFrame([
-            {"Category": "Internal tool/API errors", "Count": internal_error_count, "Rate": internal_error_count / max(1, total_traces)},
-            {"Category": "User-visible errors (ERROR/SOFT_ERROR)", "Count": user_visible_error_count, "Rate": user_visible_error_count / max(1, total_traces)},
-            {"Category": "Agent recovered from internal error", "Count": recovered, "Rate": recovered / max(1, total_traces)},
-        ])
-        error_breakdown["Rate"] = error_breakdown["Rate"].map(lambda x: f"{x:.1%}")
-        with st.expander("Error breakdown", expanded=False):
-            st.dataframe(error_breakdown, hide_index=True, use_container_width=True)
 
     if has_enrichment_cache and is_default_enrich_prompt:
         has_enrich_data = any(

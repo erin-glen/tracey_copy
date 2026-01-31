@@ -40,9 +40,12 @@ def fetch_traces_window(
 
     session = requests.Session()
     page = 1
-    limit = int(page_size)
-    if limit <= 0:
-        limit = 100
+    requested_limit = int(page_size)
+    if requested_limit <= 0:
+        requested_limit = 100
+
+    # Langfuse enforces `limit <= 100`.
+    limit = min(100, requested_limit)
     min_limit = 25
 
     if isinstance(debug_out, dict):
@@ -55,6 +58,7 @@ def fetch_traces_window(
                 "envs": envs,
                 "page_limit": page_limit,
                 "max_traces": max_traces,
+                "requested_page_size": requested_limit,
                 "page_size": limit,
                 "min_page_size": min_limit,
                 "pages": [],

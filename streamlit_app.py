@@ -218,8 +218,8 @@ section[data-testid="stSidebar"] div[data-testid="stDownloadButton"] button:hove
             stats_page_size = st.number_input(
                 "Traces per page",
                 min_value=1,
-                max_value=5000,
-                value=1000,
+                max_value=100,
+                value=100,
                 key="stats_page_size",
                 help="This is the API page size (per request). It is not the overall max; that's controlled by 'Max traces'.",
             )
