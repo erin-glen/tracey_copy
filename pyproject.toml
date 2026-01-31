@@ -1,0 +1,27 @@
+[project]
+name = "gnw-langfuse-pull"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "altair>=5.0.0",
+    "google-generativeai>=0.8.0",
+    "langid>=1.1.6",
+    "langfuse>=3.12.0",
+    "marimo>=0.19.2",
+    "pandas>=2.0.0",
+    "python-dotenv>=1.0.0",
+    "requests>=2.31.0",
+    "streamlit>=1.31.0",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["gnw_trace_pull", "streamlit_app"]
+
+[tool.marimo.runtime]
+dotenv = [".env", ".env.testing"]
