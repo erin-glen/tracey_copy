@@ -30,7 +30,6 @@ from utils import (
     strip_code_fences,
     get_gemini_model_options,
     csv_bytes_any,
-    save_bytes_to_local_path,
     daily_volume_chart,
     daily_outcome_chart,
     daily_cost_chart,
@@ -505,17 +504,6 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
         for r in df.to_dict("records")
     ]
     report_csv_bytes = csv_bytes_any(report_rows)
-
-    if st.button("💾 Save report CSV to disk", key="analytics_report_save_disk"):
-        try:
-            out_path = save_bytes_to_local_path(
-                report_csv_bytes,
-                str(st.session_state.get("csv_export_path") or ""),
-                "stats_report_rows.csv",
-            )
-            st.toast(f"Saved: {out_path}")
-        except Exception as e:
-            st.error(f"Could not save: {e}")
 
     st.download_button(
         label="Download report data `.csv`",

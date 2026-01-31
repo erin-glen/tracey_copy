@@ -3,9 +3,7 @@
 import csv
 import io
 import json
-import os
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 
@@ -63,26 +61,6 @@ def csv_bytes_any(rows: list[dict[str, Any]]) -> bytes:
     for r in rows:
         writer.writerow({k: r.get(k) for k in fields})
     return buf.getvalue().encode("utf-8")
-
-
-def save_bytes_to_local_path(data: bytes, destination: str, default_filename: str) -> str:
-    dest = (destination or "").strip()
-    if not dest:
-        raise ValueError("Missing destination")
-
-    dest = os.path.expanduser(dest)
-    p = Path(dest)
-
-    if str(p).lower().endswith(".csv"):
-        out_path = p
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-    else:
-        out_dir = p
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out_path = out_dir / default_filename
-
-    out_path.write_bytes(data or b"")
-    return str(out_path)
 
 
 def init_session_state(defaults: dict[str, Any]) -> None:

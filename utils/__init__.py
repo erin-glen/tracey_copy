@@ -24,7 +24,6 @@ from utils.data_helpers import (
     strip_code_fences,
     safe_json_loads,
     csv_bytes_any,
-    save_bytes_to_local_path,
     init_session_state,
 )
 from utils.llm_helpers import (
@@ -75,7 +74,6 @@ __all__ = [
     "strip_code_fences",
     "safe_json_loads",
     "csv_bytes_any",
-    "save_bytes_to_local_path",
     "init_session_state",
     # LLM helpers
     "get_gemini_model_options",

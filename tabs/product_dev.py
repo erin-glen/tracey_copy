@@ -19,7 +19,6 @@ from utils import (
     first_human_prompt,
     final_ai_message,
     csv_bytes_any,
-    save_bytes_to_local_path,
     get_gemini_model_options,
     chunked,
     truncate_text,
@@ -322,17 +321,6 @@ def _render_evidence_mining(
 
         evidence_csv_bytes = csv_bytes_any(table_rows)
 
-        if st.button("💾 Save results CSV to disk", key="evidence_results_save_disk"):
-            try:
-                out_path = save_bytes_to_local_path(
-                    evidence_csv_bytes,
-                    str(st.session_state.get("csv_export_path") or ""),
-                    "evidence_mining_results.csv",
-                )
-                st.toast(f"Saved: {out_path}")
-            except Exception as e:
-                st.error(f"Could not save: {e}")
-
         st.download_button(
             "⬇️ Download results CSV",
             evidence_csv_bytes,
@@ -531,17 +519,6 @@ def _render_tagging(
 
         csv_bytes = csv_bytes_any([{**r, "url": f"{base_thread_url.rstrip('/')}/{r.get('session_id')}" if r.get("session_id") else ""} for r in results])
 
-        if st.button("💾 Save tagged CSV to disk", key="tagging_save_disk"):
-            try:
-                out_path = save_bytes_to_local_path(
-                    csv_bytes,
-                    str(st.session_state.get("csv_export_path") or ""),
-                    "tagging_results.csv",
-                )
-                st.toast(f"Saved: {out_path}")
-            except Exception as e:
-                st.error(f"Could not save: {e}")
-
         st.download_button("⬇️ Download tagged CSV", csv_bytes, "tagging_results.csv", "text/csv", key="tagging_csv")
 
 
@@ -636,17 +613,6 @@ def _render_gap_analysis(
             st.dataframe(gap_table_rows, use_container_width=True)
 
             gap_csv_bytes = csv_bytes_any(gap_table_rows)
-
-            if st.button("💾 Save trace sample CSV to disk", key="gap_trace_sample_save_disk"):
-                try:
-                    out_path = save_bytes_to_local_path(
-                        gap_csv_bytes,
-                        str(st.session_state.get("csv_export_path") or ""),
-                        "gap_analysis_trace_sample.csv",
-                    )
-                    st.toast(f"Saved: {out_path}")
-                except Exception as e:
-                    st.error(f"Could not save: {e}")
 
             st.download_button(
                 "⬇️ Download trace sample (CSV)",

@@ -223,7 +223,7 @@ def render(base_thread_url: str) -> None:
         st.json(trace)
 
     st.download_button(
-        "⬇️ Download raw trace JSON",
+        "⬇️ Download trace JSON",
         data=json.dumps(trace, indent=2, ensure_ascii=False).encode("utf-8"),
         file_name=f"trace_{tid or 'unknown'}.json",
         mime="application/json",

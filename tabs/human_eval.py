@@ -11,9 +11,11 @@ from utils import (
     first_human_prompt,
     final_ai_message,
     csv_bytes_any,
-    save_bytes_to_local_path,
     init_session_state,
     extract_trace_context,
+    get_gemini_model_options,
+    truncate_text,
+    parse_json_any,
 )
 
 
@@ -55,13 +57,12 @@ def _format_elapsed(started_at: float | None) -> str:
 
 def render(
     base_thread_url: str,
+    gemini_api_key: str,
 ) -> None:
     """Render the Human Eval Sampling tab."""
     st.subheader("🧪 Human Evaluation")
 
     init_session_state({
-        "human_eval_expanded": False,
-        "human_eval_render_markdown": False,
         "human_eval_annotations": {},
         "human_eval_samples": [],
         "human_eval_index": 0,
@@ -70,7 +71,21 @@ def render(
         "human_eval_streak": 0,
         "human_eval_showed_balloons": False,
         "human_eval_evaluator_name": "",
+        "human_eval_filter_criteria": "",
+        "human_eval_filter_model": "",
+        "human_eval_filter_cache": {},
     })
+
+    def _call_gemini(api_key: str, model_name: str, prompt: str) -> str:
+        import google.generativeai as genai
+
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel(model_name)
+        resp = model.generate_content(prompt)
+        return str(getattr(resp, "text", "") or "")
+
+    def _criteria_key(model_name: str, criteria: str) -> str:
+        return f"{model_name}||{criteria.strip()}"
 
     traces: list[dict[str, Any]] = st.session_state.get("stats_traces", [])
 
@@ -98,15 +113,242 @@ def render(
         with col_seed:
             random_seed = st.number_input("Random seed", min_value=0, max_value=10_000_000, value=0)
 
+        with st.expander(
+            "🔎 Optional: Gemini pre-filter (SME topic/dataset)",
+            expanded=bool(str(st.session_state.get("human_eval_filter_criteria", "") or "").strip()),
+        ):
+            criteria = st.text_area(
+                "Filter criteria",
+                value=str(st.session_state.get("human_eval_filter_criteria", "") or ""),
+                height=90,
+                key="human_eval_filter_criteria",
+                placeholder="e.g. Only prompts about tree cover loss drivers, wildfire, or Indonesia.",
+            )
+
+            gemini_model_options = get_gemini_model_options(gemini_api_key) if gemini_api_key else []
+            default_model = "gemini-2.5-flash-lite"
+            if gemini_model_options and default_model not in gemini_model_options:
+                default_model = gemini_model_options[0]
+
+            model_name = st.selectbox(
+                "Gemini model",
+                options=gemini_model_options if gemini_model_options else [default_model],
+                index=(
+                    gemini_model_options.index(default_model)
+                    if gemini_model_options and default_model in gemini_model_options
+                    else 0
+                ),
+                key="human_eval_filter_model",
+                disabled=not bool(gemini_api_key),
+            )
+
+            max_to_classify = st.number_input(
+                "Max traces to classify",
+                min_value=10,
+                max_value=5000,
+                value=500,
+                help="Classification can be expensive; start small and increase as needed.",
+                key="human_eval_filter_max_to_classify",
+            )
+
+            st.caption(
+                "Sampling will automatically use this filter when criteria is set and matching traces have been classified."
+            )
+
+            if not gemini_api_key:
+                st.warning("No Gemini API key configured. Set GEMINI_API_KEY or GOOGLE_API_KEY.")
+
+            if st.button("Run Gemini filter", type="secondary", disabled=not bool(gemini_api_key)):
+                if not criteria.strip():
+                    st.warning("Enter filter criteria first.")
+                else:
+                    cache: dict[str, Any] = st.session_state.get("human_eval_filter_cache", {})
+                    if not isinstance(cache, dict):
+                        cache = {}
+
+                    key = _criteria_key(str(model_name or ""), str(criteria or ""))
+                    progress = st.progress(0.0, text="Classifying prompts...")
+
+                    scanned = 0
+                    updated = 0
+                    to_consider = traces[: int(max_to_classify)]
+                    batch_size = 20
+                    pending: list[dict[str, Any]] = []
+
+                    def _flush_pending() -> None:
+                        nonlocal scanned, updated, pending
+                        if not pending:
+                            return
+
+                        items = [
+                            {"trace_id": p["trace_id"], "prompt": p["prompt"]}
+                            for p in pending
+                            if p.get("trace_id") and p.get("prompt")
+                        ]
+                        if not items:
+                            pending = []
+                            return
+
+                        llm_prompt = (
+                            "You are a strict classifier for routing user prompts to domain experts.\n"
+                            "Given the criteria and each user prompt, decide if the prompt matches the criteria.\n\n"
+                            "Return ONLY valid JSON as an array of objects. Each object MUST have keys: "
+                            "trace_id (string), match (boolean), reason (string).\n\n"
+                            f"CRITERIA:\n{criteria.strip()}\n\n"
+                            "ITEMS (JSON):\n"
+                            f"{json.dumps(items, ensure_ascii=False)}\n"
+                        )
+
+                        resp_txt = _call_gemini(gemini_api_key, str(model_name), llm_prompt)
+                        parsed_any = parse_json_any(resp_txt)
+                        if not isinstance(parsed_any, list):
+                            parsed_any = []
+
+                        by_tid: dict[str, dict[str, Any]] = {}
+                        for row in parsed_any:
+                            if not isinstance(row, dict):
+                                continue
+                            tid = str(row.get("trace_id") or "").strip()
+                            if not tid:
+                                continue
+                            by_tid[tid] = row
+
+                        for p in pending:
+                            tid = str(p.get("trace_id") or "")
+                            out = by_tid.get(tid)
+                            if isinstance(out, dict):
+                                cache[tid] = {
+                                    "criteria_key": key,
+                                    "match": bool(out.get("match")),
+                                    "reason": str(out.get("reason") or ""),
+                                }
+                            else:
+                                cache[tid] = {
+                                    "criteria_key": key,
+                                    "match": False,
+                                    "reason": "parse_error",
+                                }
+                            updated += 1
+
+                        pending = []
+
+                    import json
+
+                    for t in to_consider:
+                        n = normalize_trace_format(t)
+                        tid = str(n.get("id") or "")
+                        if not tid:
+                            continue
+
+                        existing = cache.get(tid)
+                        if isinstance(existing, dict) and existing.get("criteria_key") == key:
+                            scanned += 1
+                            if scanned % 25 == 0:
+                                progress.progress(min(1.0, scanned / max(1, int(max_to_classify))))
+                            continue
+
+                        prompt_txt = first_human_prompt(n)
+                        if not prompt_txt.strip():
+                            cache[tid] = {
+                                "criteria_key": key,
+                                "match": False,
+                                "reason": "empty_prompt",
+                            }
+                            scanned += 1
+                            updated += 1
+                        else:
+                            pending.append(
+                                {
+                                    "trace_id": tid,
+                                    "prompt": truncate_text(prompt_txt, 1800),
+                                }
+                            )
+                            scanned += 1
+
+                        if len(pending) >= batch_size:
+                            _flush_pending()
+
+                        if scanned % 10 == 0:
+                            progress.progress(min(1.0, scanned / max(1, int(max_to_classify))))
+
+                    _flush_pending()
+
+                    st.session_state.human_eval_filter_cache = cache
+                    st.success(f"Classified {updated:,} prompts (scanned {scanned:,}).")
+                    progress.empty()
+
+            cache = st.session_state.get("human_eval_filter_cache", {})
+            key = _criteria_key(str(st.session_state.get("human_eval_filter_model") or ""), str(criteria or ""))
+            evaluated = 0
+            matches = 0
+            matched_rows: list[dict[str, Any]] = []
+            if isinstance(cache, dict) and key and criteria.strip():
+                for t in traces:
+                    n = normalize_trace_format(t)
+                    tid = str(n.get("id") or "")
+                    if not tid:
+                        continue
+                    entry = cache.get(tid)
+                    if isinstance(entry, dict) and entry.get("criteria_key") == key:
+                        evaluated += 1
+                        if entry.get("match") is True:
+                            matches += 1
+                            prompt_txt = first_human_prompt(n)
+                            matched_rows.append(
+                                {
+                                    "trace_id": tid,
+                                    "session_id": str(n.get("sessionId") or ""),
+                                    "prompt": truncate_text(str(prompt_txt or ""), 220),
+                                    "reason": truncate_text(str(entry.get("reason") or ""), 220),
+                                }
+                            )
+
+                st.caption(
+                    f"Gemini filter coverage: {evaluated:,}/{len(traces):,} classified. Matches: {matches:,}."
+                )
+
+                preview_df = matched_rows[:5]
+                if preview_df:
+                    st.dataframe(preview_df, hide_index=True, use_container_width=True)
+                else:
+                    st.info("No matched examples to preview yet.")
+
         if st.button("🎲 Sample from fetched traces", type="primary"):
             st.session_state.human_eval_evaluator_name = evaluator_name.strip()
             normed: list[dict[str, Any]] = []
+
+            criteria = str(st.session_state.get("human_eval_filter_criteria", "") or "")
+            model_name = str(st.session_state.get("human_eval_filter_model", "") or "")
+            filter_active = bool(criteria.strip())
+            criteria_key = _criteria_key(model_name, criteria) if filter_active else ""
+            cache = st.session_state.get("human_eval_filter_cache", {})
+
+            if filter_active:
+                if not isinstance(cache, dict) or not any(
+                    isinstance(v, dict)
+                    and v.get("criteria_key") == criteria_key
+                    and v.get("match") is True
+                    for v in cache.values()
+                ):
+                    st.warning(
+                        "Filter criteria is set, but there are no matching classified traces yet. "
+                        "Run the Gemini filter (or increase 'Max traces to classify') before sampling."
+                    )
+                    return
+
             for t in traces:
                 n = normalize_trace_format(t)
                 prompt = first_human_prompt(n)
                 answer = final_ai_message(n)
                 if not prompt or not answer:
                     continue
+
+                if filter_active and criteria.strip():
+                    tid = str(n.get("id") or "")
+                    entry = cache.get(tid) if isinstance(cache, dict) and tid else None
+                    if not (isinstance(entry, dict) and entry.get("criteria_key") == criteria_key and entry.get("match") is True):
+                        continue
+
                 helper_info = extract_trace_context(n)
                 normed.append(
                     {
@@ -122,6 +364,7 @@ def render(
                         "tools_used": helper_info.get("tools_used", []),
                         "aoi_name": helper_info.get("aoi_name", ""),
                         "aoi_type": helper_info.get("aoi_type", ""),
+                        "filter_match": True if filter_active and criteria.strip() else False,
                     }
                 )
 
@@ -134,11 +377,6 @@ def render(
             st.session_state.human_eval_completed = False
             st.session_state.human_eval_streak = 0
             st.session_state.human_eval_showed_balloons = False
-            # Collapse sidebar after sampling
-            st.markdown(
-                '<script>window.parent.document.querySelector("[data-testid=stSidebarCollapsedControl] button")?.click();</script>',
-                unsafe_allow_html=True,
-            )
             st.rerun()
 
         st.info("Click the button above to create a shuffled sample from the shared traces.")
@@ -221,17 +459,6 @@ Thank you for your contribution! 🙏
             type="primary",
         )
 
-        if st.button("💾 Save evaluation CSV to disk", key="human_eval_save_disk_done"):
-            try:
-                out_path = save_bytes_to_local_path(
-                    eval_csv_bytes,
-                    str(st.session_state.get("csv_export_path") or ""),
-                    csv_filename,
-                )
-                st.toast(f"Saved: {out_path}")
-            except Exception as e:
-                st.error(f"Could not save: {e}")
-
         if st.button("🔄 Start new session"):
             st.session_state.human_eval_samples = []
             st.session_state.human_eval_annotations = {}
@@ -246,22 +473,13 @@ Thank you for your contribution! 🙏
     current_rating = existing.get("rating", "")
     url = f"{base_thread_url.rstrip('/')}/{row.get('session_id')}" if row.get("session_id") else ""
 
-    is_expanded = st.session_state.human_eval_expanded
-    render_md = st.session_state.human_eval_render_markdown
-
     def _render_content():
         """Render prompt and output content."""
         st.markdown("**`(つ ⊙_⊙)つ` User Prompt**")
-        if render_md:
-            st.markdown(prompt_text)
-        else:
-            st.code(prompt_text, language=None, wrap_lines=True)
+        st.code(prompt_text, language=None, wrap_lines=True)
 
         st.markdown("**`|> °-°|>` Zeno Output**")
-        if render_md:
-            st.markdown(answer_text)
-        else:
-            st.code(answer_text, language=None, wrap_lines=True)
+        st.code(answer_text, language=None, wrap_lines=True)
 
         # Helper info expander (collapsed by default)
         aois = row.get("aois") or []
@@ -291,39 +509,10 @@ Thank you for your contribution! 🙏
                     st.caption("**AOI selected**")
                     st.write(f"{aoi_name} ({aoi_type})".strip() if aoi_name or aoi_type else "—")
 
-    if is_expanded:
-        toggle_cols = st.columns([1, 1, 6])
-        with toggle_cols[0]:
-            if st.button("🔙 Collapse", use_container_width=True):
-                st.session_state.human_eval_expanded = False
-                st.rerun()
-        with toggle_cols[1]:
-            md_toggle = st.toggle("Markdown", value=render_md, key="md_toggle_exp")
-            if md_toggle != render_md:
-                st.session_state.human_eval_render_markdown = md_toggle
-                st.rerun()
+    col_content, col_controls = st.columns([13, 8], gap="small")
 
+    with col_content:
         _render_content()
-        st.markdown("---")
-
-    if is_expanded:
-        col_controls = st.container()
-    else:
-        col_content, col_controls = st.columns([5, 2], gap="small")
-
-        with col_content:
-            view_cols = st.columns([1, 1, 4])
-            with view_cols[0]:
-                if st.button("🔍 Expand", use_container_width=True):
-                    st.session_state.human_eval_expanded = True
-                    st.rerun()
-            with view_cols[1]:
-                md_toggle = st.toggle("MD", value=render_md, key="md_toggle_compact")
-                if md_toggle != render_md:
-                    st.session_state.human_eval_render_markdown = md_toggle
-                    st.rerun()
-
-            _render_content()
 
     with col_controls:
         st.progress(progress)
@@ -383,17 +572,6 @@ Thank you for your contribution! 🙏
             key="human_eval_evaluations_csv",
             use_container_width=True,
         )
-
-        if st.button("💾 Save CSV to disk", key="human_eval_save_disk"):
-            try:
-                out_path = save_bytes_to_local_path(
-                    eval_csv_bytes,
-                    str(st.session_state.get("csv_export_path") or ""),
-                    csv_filename,
-                )
-                st.toast(f"Saved: {out_path}")
-            except Exception as e:
-                st.error(f"Could not save: {e}")
 
         if st.button("💾 Save & Finish", use_container_width=True):
             st.session_state.human_eval_completed = True

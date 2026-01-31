@@ -1,7 +1,6 @@
 import os
 from datetime import date, datetime, time, timedelta, timezone
 import inspect
-from pathlib import Path
 from typing import Any
 
 import streamlit as st
@@ -103,9 +102,6 @@ def main() -> None:
         if "stats_traces" not in st.session_state:
             st.session_state.stats_traces = []
 
-        if "csv_export_path" not in st.session_state:
-            st.session_state.csv_export_path = str(Path.home() / "Downloads")
-
         st.markdown(
             """
 <style>
@@ -166,7 +162,7 @@ section[data-testid="stSidebar"] div[data-testid="stDownloadButton"] button:hove
                 raw_csv_bytes = csv_bytes_any(out_rows)
 
                 st.download_button(
-                    label="⬇️ Download raw csv",
+                    label="⬇️ Download csv",
                     data=raw_csv_bytes,
                     file_name="gnw_traces_raw.csv",
                     mime="text/csv",
@@ -174,11 +170,11 @@ section[data-testid="stSidebar"] div[data-testid="stDownloadButton"] button:hove
                     use_container_width=True,
                 )
             else:
-                st.button("⬇️ Download raw csv", disabled=True, use_container_width=True)
+                st.button("⬇️ Download csv", disabled=True, use_container_width=True)
 
         fetch_status = st.empty()
 
-        with st.expander("🔎 Fetch debug (Langfuse API)", expanded=False):
+        with st.expander("🔎 Debug Langfuse call", expanded=False):
             dbg = st.session_state.get("fetch_debug")
             if isinstance(dbg, dict) and dbg:
                 st.json(dbg)
@@ -232,18 +228,6 @@ section[data-testid="stSidebar"] div[data-testid="stDownloadButton"] button:hove
             )
 
             base_thread_url = f"https://www.{'staging.' if environment == 'staging' else ''}globalnaturewatch.org/app/threads"
-
-        with st.expander("⬇️ Exports", expanded=False):
-            st.text_input(
-                "Local export path",
-                value=str(st.session_state.get("csv_export_path") or ""),
-                key="csv_export_path",
-                placeholder="e.g. ~/Downloads or /tmp/gnw_traces.csv",
-                help=(
-                    "Browser downloads can't pick a destination folder. "
-                    "If you provide a directory or full .csv path here, the app can also save exports directly to disk."
-                ),
-            )
 
         if fetch_clicked:
             if not public_key or not secret_key or not base_url:
@@ -351,6 +335,7 @@ section[data-testid="stSidebar"] div[data-testid="stDownloadButton"] button:hove
     with tabs[2]:
         render_human_eval(
             base_thread_url=base_thread_url,
+            gemini_api_key=gemini_api_key,
         )
 
     with tabs[3]:
