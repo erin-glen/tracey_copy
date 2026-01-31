@@ -2,7 +2,6 @@
 
 import hashlib
 import json
-import re
 import time as time_mod
 from pathlib import Path
 from typing import Any
@@ -21,11 +20,13 @@ from utils import (
     first_human_prompt,
     final_ai_message,
     classify_outcome,
+    extract_trace_context,
     as_float,
     safe_json_loads,
     strip_code_fences,
     get_gemini_model_options,
     csv_bytes_any,
+    save_bytes_to_local_path,
     daily_volume_chart,
     daily_outcome_chart,
     daily_cost_chart,
@@ -80,29 +81,7 @@ def render(
         dt = parse_trace_dt(n)
         outcome = classify_outcome(n, answer or "")
 
-        aoi_name = ""
-        aoi_type = ""
-        out_msgs = ((n.get("output") or {}).get("messages") or [])
-        for m in out_msgs:
-            if not isinstance(m, dict):
-                continue
-            if m.get("type") == "tool" and m.get("name") == "pick_aoi":
-                content = str(m.get("content") or "")
-                m_aoi = re.search(r"Selected AOI:\s*(.*?)(?:,\s*type:\s*(.*))?$", content)
-                if m_aoi:
-                    aoi_name = (m_aoi.group(1) or "").strip()
-                    aoi_type = (m_aoi.group(2) or "").strip()
-
-        datasets_analysed: list[str] = []
-        try:
-            output_str = str(n.get("output") or "")
-            hits = re.findall(r"/land_change/([^/]+)/", output_str)
-            for h in hits:
-                h = str(h).strip()
-                if h and h not in datasets_analysed:
-                    datasets_analysed.append(h)
-        except Exception:
-            pass
+        ctx = extract_trace_context(n)
 
         rows.append(
             {
@@ -117,9 +96,9 @@ def render(
                 "outcome": outcome,
                 "prompt": prompt,
                 "answer": answer,
-                "aoi_name": aoi_name,
-                "aoi_type": aoi_type,
-                "datasets_analysed": ", ".join(datasets_analysed),
+                "aoi_name": ctx.get("aoi_name", ""),
+                "aoi_type": ctx.get("aoi_type", ""),
+                "datasets_analysed": ", ".join(ctx.get("datasets_analysed", [])),
             }
         )
 
@@ -480,17 +459,29 @@ def render(
     )
     st.dataframe(summary_tbl, width="stretch", hide_index=True)
 
+    report_rows = [
+        {
+            **{k: ("" if pd.isna(v) else v) for k, v in r.items()},
+            "url": f"{base_thread_url.rstrip('/')}/{r.get('session_id')}" if r.get("session_id") else "",
+        }
+        for r in df.to_dict("records")
+    ]
+    report_csv_bytes = csv_bytes_any(report_rows)
+
+    if st.button("💾 Save report CSV to disk", key="analytics_report_save_disk"):
+        try:
+            out_path = save_bytes_to_local_path(
+                report_csv_bytes,
+                str(st.session_state.get("csv_export_path") or ""),
+                "stats_report_rows.csv",
+            )
+            st.toast(f"Saved: {out_path}")
+        except Exception as e:
+            st.error(f"Could not save: {e}")
+
     st.download_button(
         label="Download report data `.csv`",
-        data=csv_bytes_any(
-            [
-                {
-                    **{k: ("" if pd.isna(v) else v) for k, v in r.items()},
-                    "url": f"{base_thread_url.rstrip('/')}/{r.get('session_id')}" if r.get("session_id") else "",
-                }
-                for r in df.to_dict("records")
-            ]
-        ),
+        data=report_csv_bytes,
         file_name="stats_report_rows.csv",
         mime="text/csv",
         key="analytics_report_csv",

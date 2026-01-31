@@ -1,7 +1,6 @@
 """Human evaluation sampling tab."""
 
 import random
-import re
 import time
 from typing import Any
 
@@ -12,72 +11,11 @@ from utils import (
     first_human_prompt,
     final_ai_message,
     csv_bytes_any,
+    save_bytes_to_local_path,
     init_session_state,
+    extract_trace_context,
 )
 
-
-def _extract_helper_info(trace: dict[str, Any]) -> dict[str, Any]:
-    """Extract AOIs, datasets, and tool names from trace for eval context."""
-    aois: list[str] = []
-    datasets: list[str] = []
-    datasets_analysed: list[str] = []
-    tools_used: list[str] = []
-    aoi_name = ""
-    aoi_type = ""
-
-    out_msgs = ((trace.get("output") or {}).get("messages") or [])
-    for m in out_msgs:
-        if not isinstance(m, dict):
-            continue
-
-        if m.get("type") == "tool" and m.get("name") == "pick_aoi":
-            # Example: "Selected AOI: Kalimantan Barat, Indonesia, type: state-province"
-            content = str(m.get("content") or "")
-            m_aoi = re.search(r"Selected AOI:\s*(.*?)(?:,\s*type:\s*(.*))?$", content)
-            if m_aoi:
-                aoi_name = (m_aoi.group(1) or "").strip()
-                aoi_type = (m_aoi.group(2) or "").strip()
-
-        # Collect tool call names and args
-        for tc in (m.get("tool_calls") or []):
-            if not isinstance(tc, dict):
-                continue
-            name = str(tc.get("name") or "")
-            if name and name not in tools_used:
-                tools_used.append(name)
-            args = tc.get("args") or {}
-            if isinstance(args, dict):
-                # Look for AOI-related args
-                for k in ["aoi", "aoi_name", "aoi_id", "area_of_interest"]:
-                    v = args.get(k)
-                    if v and str(v).strip() and str(v).strip() not in aois:
-                        aois.append(str(v).strip())
-                # Look for dataset-related args
-                for k in ["dataset", "dataset_name", "dataset_id", "layer", "layer_name"]:
-                    v = args.get(k)
-                    if v and str(v).strip() and str(v).strip() not in datasets:
-                        datasets.append(str(v).strip())
-
-    try:
-        # Prefer explicit API URLs if they exist anywhere in output payload.
-        # We key off the path segment after "land_change/" (e.g. "dist_alerts").
-        output_str = str(trace.get("output") or "")
-        hits = re.findall(r"/land_change/([^/]+)/", output_str)
-        for h in hits:
-            h = str(h).strip()
-            if h and h not in datasets_analysed:
-                datasets_analysed.append(h)
-    except Exception:
-        pass
-
-    return {
-        "aois": aois,
-        "datasets": datasets,
-        "datasets_analysed": datasets_analysed,
-        "tools_used": tools_used,
-        "aoi_name": aoi_name,
-        "aoi_type": aoi_type,
-    }
 
 ENCOURAGEMENT_MESSAGES = [
     "Great start! 🚀",
@@ -169,7 +107,7 @@ def render(
                 answer = final_ai_message(n)
                 if not prompt or not answer:
                     continue
-                helper_info = _extract_helper_info(n)
+                helper_info = extract_trace_context(n)
                 normed.append(
                     {
                         "trace_id": n.get("id"),
@@ -282,6 +220,17 @@ Thank you for your contribution! 🙏
             key="human_eval_evaluations_csv",
             type="primary",
         )
+
+        if st.button("💾 Save evaluation CSV to disk", key="human_eval_save_disk_done"):
+            try:
+                out_path = save_bytes_to_local_path(
+                    eval_csv_bytes,
+                    str(st.session_state.get("csv_export_path") or ""),
+                    csv_filename,
+                )
+                st.toast(f"Saved: {out_path}")
+            except Exception as e:
+                st.error(f"Could not save: {e}")
 
         if st.button("🔄 Start new session"):
             st.session_state.human_eval_samples = []
@@ -434,6 +383,17 @@ Thank you for your contribution! 🙏
             key="human_eval_evaluations_csv",
             use_container_width=True,
         )
+
+        if st.button("💾 Save CSV to disk", key="human_eval_save_disk"):
+            try:
+                out_path = save_bytes_to_local_path(
+                    eval_csv_bytes,
+                    str(st.session_state.get("csv_export_path") or ""),
+                    csv_filename,
+                )
+                st.toast(f"Saved: {out_path}")
+            except Exception as e:
+                st.error(f"Could not save: {e}")
 
         if st.button("💾 Save & Finish", use_container_width=True):
             st.session_state.human_eval_completed = True

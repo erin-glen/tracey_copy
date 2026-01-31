@@ -5,7 +5,7 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
-from utils import csv_bytes_any, normalize_trace_format
+from utils import csv_bytes_any, normalize_trace_format, save_bytes_to_local_path
 
 
 def render(
@@ -53,6 +53,18 @@ def render(
     )
 
     csv_data = csv_bytes_any(rows)
+
+    if st.button("💾 Save CSV to disk", key="session_urls_save_disk"):
+        try:
+            out_path = save_bytes_to_local_path(
+                csv_data,
+                str(st.session_state.get("csv_export_path") or ""),
+                "gnw_session_urls.csv",
+            )
+            st.toast(f"Saved: {out_path}")
+        except Exception as e:
+            st.error(f"Could not save: {e}")
+
     st.download_button(
         label="Download CSV",
         data=csv_data,

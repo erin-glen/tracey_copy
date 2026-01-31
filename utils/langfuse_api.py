@@ -1,7 +1,6 @@
 """Langfuse API utilities for fetching and managing traces/sessions."""
 
 import base64
-import os
 import time as time_mod
 from typing import Any
 
@@ -99,24 +98,6 @@ def fetch_traces_window(
         time_mod.sleep(0.05)
 
     return rows
-
-
-def build_langfuse_client(
-    public_key: str | None,
-    secret_key: str | None,
-    base_url: str | None,
-):
-    """Build and return a Langfuse client, setting environment variables as needed."""
-    if public_key:
-        os.environ["LANGFUSE_PUBLIC_KEY"] = public_key
-    if secret_key:
-        os.environ["LANGFUSE_SECRET_KEY"] = secret_key
-    if base_url:
-        os.environ["LANGFUSE_BASE_URL"] = base_url
-
-    from langfuse import get_client
-
-    return get_client()
 
 
 def extract_datasets_from_session(langfuse: Any, session_id: str) -> str:

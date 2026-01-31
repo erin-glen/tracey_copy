@@ -1,5 +1,6 @@
 """Utilities for parsing and classifying Langfuse traces."""
 
+import re
 import json
 from datetime import datetime
 from typing import Any
@@ -102,42 +103,7 @@ def trace_used_tools(row: dict[str, Any]) -> bool:
     if isinstance(obs, list) and obs:
         return True
     out_msgs = (((row.get("output") or {}).get("messages")) or [])
-    for m in out_msgs:
-        if isinstance(m, dict) and m.get("type") == "tool":
-            return True
-    return False
-
-
-def traces_to_rows(
-    traces: list[dict[str, Any]],
-    limit: int | None = None,
-) -> list[dict[str, Any]]:
-    """Normalize a list of traces to flat rows with prompt/answer extracted.
-    
-    This is the canonical way to convert raw Langfuse traces into a list of
-    dictionaries suitable for display, CSV export, or further processing.
-    """
-    rows: list[dict[str, Any]] = []
-    for t in traces:
-        n = normalize_trace_format(t)
-        prompt = first_human_prompt(n)
-        answer = final_ai_message(n)
-        dt = parse_trace_dt(n)
-        rows.append({
-            "trace_id": n.get("id"),
-            "timestamp": dt,
-            "date": dt.date() if dt else None,
-            "session_id": n.get("sessionId"),
-            "environment": n.get("environment"),
-            "user_id": n.get("userId") or (n.get("metadata") or {}).get("user_id") or (n.get("metadata") or {}).get("userId"),
-            "latency_seconds": None,  # caller can enrich if needed
-            "total_cost": None,
-            "prompt": prompt,
-            "answer": answer,
-        })
-        if limit and len(rows) >= limit:
-            break
-    return rows
+    return any(isinstance(m, dict) and m.get("type") == "tool" for m in out_msgs)
 
 
 def classify_outcome(row: dict[str, Any], answer: str) -> str:
@@ -149,3 +115,72 @@ def classify_outcome(row: dict[str, Any], answer: str) -> str:
     if not trace_used_tools(row):
         return "DEFER"
     return "ANSWER"
+
+
+def extract_trace_context(trace: dict[str, Any]) -> dict[str, Any]:
+    """Extract AOIs, datasets, and tool names from a trace for context/eval.
+
+    Returns a dict with keys:
+        - aoi_name: str - The selected AOI name (from pick_aoi tool)
+        - aoi_type: str - The selected AOI type
+        - aois: list[str] - AOIs mentioned in tool call args
+        - datasets: list[str] - Datasets mentioned in tool call args
+        - datasets_analysed: list[str] - Datasets found in API URLs
+        - tools_used: list[str] - Names of tools called
+    """
+    aois: list[str] = []
+    datasets: list[str] = []
+    datasets_analysed: list[str] = []
+    tools_used: list[str] = []
+    aoi_name = ""
+    aoi_type = ""
+
+    out_msgs = ((trace.get("output") or {}).get("messages") or [])
+    for m in out_msgs:
+        if not isinstance(m, dict):
+            continue
+
+        if m.get("type") == "tool" and m.get("name") == "pick_aoi":
+            content = str(m.get("content") or "")
+            m_aoi = re.search(
+                r"Selected AOI:\s*(.*?)(?:,\s*type:\s*(.*))?$", content
+            )
+            if m_aoi:
+                aoi_name = (m_aoi.group(1) or "").strip()
+                aoi_type = (m_aoi.group(2) or "").strip()
+
+        for tc in (m.get("tool_calls") or []):
+            if not isinstance(tc, dict):
+                continue
+            name = str(tc.get("name") or "")
+            if name and name not in tools_used:
+                tools_used.append(name)
+            args = tc.get("args") or {}
+            if isinstance(args, dict):
+                for k in ["aoi", "aoi_name", "aoi_id", "area_of_interest"]:
+                    v = args.get(k)
+                    if v and str(v).strip() and str(v).strip() not in aois:
+                        aois.append(str(v).strip())
+                for k in ["dataset", "dataset_name", "dataset_id", "layer", "layer_name"]:
+                    v = args.get(k)
+                    if v and str(v).strip() and str(v).strip() not in datasets:
+                        datasets.append(str(v).strip())
+
+    try:
+        output_str = str(trace.get("output") or "")
+        hits = re.findall(r"/land_change/([^/]+)/", output_str)
+        for h in hits:
+            h = str(h).strip()
+            if h and h not in datasets_analysed:
+                datasets_analysed.append(h)
+    except Exception:
+        pass
+
+    return {
+        "aoi_name": aoi_name,
+        "aoi_type": aoi_type,
+        "aois": aois,
+        "datasets": datasets,
+        "datasets_analysed": datasets_analysed,
+        "tools_used": tools_used,
+    }

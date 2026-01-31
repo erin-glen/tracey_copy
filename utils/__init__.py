@@ -3,7 +3,6 @@
 from utils.langfuse_api import (
     get_langfuse_headers,
     fetch_traces_window,
-    build_langfuse_client,
     extract_datasets_from_session,
 )
 from utils.trace_parsing import (
@@ -12,9 +11,7 @@ from utils.trace_parsing import (
     first_human_prompt,
     final_ai_message,
     classify_outcome,
-    trace_used_tools,
-    looks_like_error_answer,
-    traces_to_rows,
+    extract_trace_context,
 )
 from utils.data_helpers import (
     maybe_load_dotenv,
@@ -22,9 +19,8 @@ from utils.data_helpers import (
     as_float,
     strip_code_fences,
     safe_json_loads,
-    msg_text,
-    csv_bytes,
     csv_bytes_any,
+    save_bytes_to_local_path,
     init_session_state,
 )
 from utils.llm_helpers import (
@@ -48,32 +44,33 @@ from utils.charts import (
 )
 
 __all__ = [
+    # Langfuse API
     "get_langfuse_headers",
     "fetch_traces_window",
-    "build_langfuse_client",
     "extract_datasets_from_session",
+    # Trace parsing
     "normalize_trace_format",
     "parse_trace_dt",
     "first_human_prompt",
     "final_ai_message",
     "classify_outcome",
-    "trace_used_tools",
-    "looks_like_error_answer",
-    "traces_to_rows",
+    "extract_trace_context",
+    # Data helpers
     "maybe_load_dotenv",
     "iso_utc",
     "as_float",
     "strip_code_fences",
     "safe_json_loads",
-    "msg_text",
-    "csv_bytes",
     "csv_bytes_any",
+    "save_bytes_to_local_path",
     "init_session_state",
+    # LLM helpers
     "get_gemini_model_options",
     "chunked",
     "truncate_text",
     "parse_json_any",
     "parse_json_dict",
+    # Charts
     "daily_volume_chart",
     "daily_outcome_chart",
     "daily_cost_chart",

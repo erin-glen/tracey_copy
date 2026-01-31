@@ -3,7 +3,9 @@
 import csv
 import io
 import json
+import os
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 
@@ -50,31 +52,6 @@ def safe_json_loads(text: str) -> dict[str, Any]:
         return {"raw": t}
 
 
-def msg_text(content: Any) -> str:
-    """Extract text from message content (string or list of content blocks)."""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        out: list[str] = []
-        for c in content:
-            if isinstance(c, dict):
-                if "text" in c and isinstance(c["text"], str):
-                    out.append(c["text"])
-                elif "content" in c and isinstance(c["content"], str):
-                    out.append(c["content"])
-        return "\n".join(out)
-    return ""
-
-
-def csv_bytes(rows: list[dict[str, str]]) -> bytes:
-    """Convert rows with url/datasets columns to CSV bytes."""
-    buf = io.StringIO()
-    writer = csv.DictWriter(buf, fieldnames=["url", "datasets"])
-    writer.writeheader()
-    writer.writerows(rows)
-    return buf.getvalue().encode("utf-8")
-
-
 def csv_bytes_any(rows: list[dict[str, Any]]) -> bytes:
     """Convert arbitrary dict rows to CSV bytes."""
     if not rows:
@@ -88,9 +65,29 @@ def csv_bytes_any(rows: list[dict[str, Any]]) -> bytes:
     return buf.getvalue().encode("utf-8")
 
 
+def save_bytes_to_local_path(data: bytes, destination: str, default_filename: str) -> str:
+    dest = (destination or "").strip()
+    if not dest:
+        raise ValueError("Missing destination")
+
+    dest = os.path.expanduser(dest)
+    p = Path(dest)
+
+    if str(p).lower().endswith(".csv"):
+        out_path = p
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        out_dir = p
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / default_filename
+
+    out_path.write_bytes(data or b"")
+    return str(out_path)
+
+
 def init_session_state(defaults: dict[str, Any]) -> None:
     """Initialize multiple session state keys with defaults if not already set.
-    
+
     Example:
         init_session_state({
             "my_list": [],

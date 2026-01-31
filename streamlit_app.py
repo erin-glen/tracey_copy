@@ -1,5 +1,6 @@
 import os
 from datetime import date, datetime, time, timedelta, timezone
+from pathlib import Path
 
 import streamlit as st
 
@@ -15,6 +16,7 @@ from utils import (
     normalize_trace_format,
     parse_trace_dt,
     final_ai_message,
+    save_bytes_to_local_path,
 )
 from tabs import (
     render_session_urls,
@@ -100,6 +102,9 @@ def main() -> None:
         if "stats_traces" not in st.session_state:
             st.session_state.stats_traces = []
 
+        if "csv_export_path" not in st.session_state:
+            st.session_state.csv_export_path = str(Path.home() / "Downloads")
+
         st.markdown(
             """
 <style>
@@ -157,9 +162,22 @@ section[data-testid="stSidebar"] div[data-testid="stDownloadButton"] button:hove
                         }
                     )
 
+                raw_csv_bytes = csv_bytes_any(out_rows)
+
+                if st.button("💾 Save raw csv", key="raw_csv_save_disk", use_container_width=True):
+                    try:
+                        out_path = save_bytes_to_local_path(
+                            raw_csv_bytes,
+                            str(st.session_state.get("csv_export_path") or ""),
+                            "gnw_traces_raw.csv",
+                        )
+                        st.toast(f"Saved: {out_path}")
+                    except Exception as e:
+                        st.error(f"Could not save: {e}")
+
                 st.download_button(
                     label="⬇️ Download raw csv",
-                    data=csv_bytes_any(out_rows),
+                    data=raw_csv_bytes,
                     file_name="gnw_traces_raw.csv",
                     mime="text/csv",
                     key="raw_csv_download",
@@ -209,6 +227,18 @@ section[data-testid="stSidebar"] div[data-testid="stDownloadButton"] button:hove
             )
 
             base_thread_url = f"https://www.{'staging.' if environment == 'staging' else ''}globalnaturewatch.org/app/threads"
+
+        with st.expander("⬇️ Exports", expanded=False):
+            st.text_input(
+                "Local export path",
+                value=str(st.session_state.get("csv_export_path") or ""),
+                key="csv_export_path",
+                placeholder="e.g. ~/Downloads or /tmp/gnw_traces.csv",
+                help=(
+                    "Browser downloads can't pick a destination folder. "
+                    "If you provide a directory or full .csv path here, the app can also save exports directly to disk."
+                ),
+            )
 
         if fetch_clicked:
             if not public_key or not secret_key or not base_url:
