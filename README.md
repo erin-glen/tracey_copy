@@ -1,4 +1,12 @@
-# GNW Trace Evals (Tracey)
+# 💬🧠📎 Tracey.
+Think: _Clippy_... but for GNW traces. A suite of tools intended to make GNW traces accessible, regardless of technical capability. 
+
+**ℹ️ What this tool does**
+Tracey allows you quickly pull and explore traces from Langfuse.
+- **📥 Fetch** a single set of traces once
+- **📊 Explore** the same dataset across tabs
+- **📋 Generate** reports & understand user behaviour
+- **🧪 Sample** for human eval & product mining
 
 ## Run locally
 
