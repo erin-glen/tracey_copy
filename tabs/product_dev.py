@@ -101,7 +101,7 @@ def _render_llm_settings(
             value=bool(st.session_state.get("product_dev_use_batching", False)),
             key="product_dev_use_batching",
         )
-        batch_size = st.number_input(
+        st.number_input(
             "Batch size",
             min_value=1,
             max_value=50,
@@ -109,7 +109,7 @@ def _render_llm_settings(
             key="product_dev_batch_size",
             disabled=not use_batching,
         )
-        max_chars_per_trace = st.number_input(
+        st.number_input(
             "Max chars per trace (prompt/output)",
             min_value=200,
             max_value=20000,

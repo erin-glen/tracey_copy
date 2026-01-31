@@ -3,7 +3,6 @@
 import hashlib
 import json
 import time as time_mod
-from datetime import datetime, time, timezone
 from pathlib import Path
 from typing import Any
 
@@ -16,9 +15,6 @@ from utils.prompt_fixtures import (
     DEFAULT_ENRICH_PROMPT,
 )
 from utils import (
-    get_langfuse_headers,
-    iso_utc,
-    fetch_traces_window,
     normalize_trace_format,
     parse_trace_dt,
     first_human_prompt,
@@ -101,6 +97,15 @@ def render(
     df = pd.DataFrame(rows)
     if "timestamp" in df.columns:
         df = df.sort_values("timestamp", na_position="last")
+
+    if "prompt" in df.columns:
+        df["prompt_len_chars"] = df["prompt"].fillna("").astype("string").map(lambda x: len(str(x)))
+        df["prompt_len_words"] = (
+            df["prompt"]
+            .fillna("")
+            .astype("string")
+            .map(lambda x: len([w for w in str(x).strip().split() if w]))
+        )
 
     try:
         from langid.langid import LanguageIdentifier, model as langid_model
@@ -359,7 +364,6 @@ def render(
     util_mean_prompts = 0.0
     util_median_prompts = 0.0
     util_p95_prompts = 0.0
-    util_max_prompts = 0.0
     user_day_counts: pd.DataFrame | None = None
     if "date" in df.columns and "user_id" in df.columns:
         base_prompts = df.dropna(subset=["date", "user_id"]).copy()
@@ -376,7 +380,6 @@ def render(
                 util_mean_prompts = float(s_util.mean())
                 util_median_prompts = float(s_util.median())
                 util_p95_prompts = float(s_util.quantile(0.95))
-                util_max_prompts = float(s_util.max())
 
     if total_traces:
         success_rate = float((df["outcome"] == "ANSWER").mean())
@@ -655,11 +658,8 @@ def render(
         prompt_norm = df["prompt"].map(_norm_prompt)
         starter_label = prompt_norm.map(lambda p: starter_label_map.get(p) if p in starter_set else "Other")
 
-        total_prompts = int(starter_label.notna().sum())
         starter_count = int((starter_label != "Other").sum())
         other_count = int((starter_label == "Other").sum())
-        starter_pct = (starter_count / total_prompts * 100.0) if total_prompts else 0.0
-        other_pct = (other_count / total_prompts * 100.0) if total_prompts else 0.0
 
         starter_only = starter_label[starter_label != "Other"]
 
@@ -718,6 +718,101 @@ def render(
             st.altair_chart(starter_breakdown_chart, width="stretch")
 
     st.markdown("### Distributions & Breakdowns")
+
+    if ("prompt_len_chars" in df.columns or "prompt_len_words" in df.columns) and len(df):
+        prompt_len_chars_s = df["prompt_len_chars"].dropna() if "prompt_len_chars" in df.columns else pd.Series(dtype="float")
+        prompt_len_words_s = df["prompt_len_words"].dropna() if "prompt_len_words" in df.columns else pd.Series(dtype="float")
+        prompt_len_chars_s = prompt_len_chars_s[prompt_len_chars_s > 0]
+        prompt_len_words_s = prompt_len_words_s[prompt_len_words_s > 0]
+
+        st.markdown("#### Prompt length")
+        plc, plw = st.columns(2)
+
+        with plc:
+            st.markdown("##### Characters")
+            if len(prompt_len_chars_s):
+                c1, c2, c3, c4, c5, c6 = st.columns(6)
+                with c1:
+                    st.metric("N", str(int(prompt_len_chars_s.count())))
+                with c2:
+                    st.metric("Mean", f"{float(prompt_len_chars_s.mean()):.0f}")
+                with c3:
+                    st.metric("Median", f"{float(prompt_len_chars_s.median()):.0f}")
+                with c4:
+                    st.metric("P90", f"{float(prompt_len_chars_s.quantile(0.9)):.0f}")
+                with c5:
+                    st.metric("P95", f"{float(prompt_len_chars_s.quantile(0.95)):.0f}")
+                with c6:
+                    st.metric("Max", f"{float(prompt_len_chars_s.max()):.0f}")
+
+                prompt_len_chars_hist = (
+                    alt.Chart(pd.DataFrame({"prompt_len_chars": prompt_len_chars_s}))
+                    .transform_bin(
+                        as_=["bin_start", "bin_end"],
+                        field="prompt_len_chars",
+                        bin=alt.Bin(maxbins=60),
+                    )
+                    .transform_calculate(bin_width="datum.bin_end - datum.bin_start")
+                    .mark_bar()
+                    .encode(
+                        x=alt.X("bin_start:Q", title="Prompt length (characters)", bin=alt.Bin(binned=True)),
+                        x2=alt.X2("bin_end:Q"),
+                        y=alt.Y("count()", title="Count"),
+                        tooltip=[
+                            alt.Tooltip("bin_start:Q", title="Bin start", format=","),
+                            alt.Tooltip("bin_end:Q", title="Bin end", format=","),
+                            alt.Tooltip("bin_width:Q", title="Bin width", format=","),
+                            alt.Tooltip("count()", title="Count", format=","),
+                        ],
+                    )
+                    .properties(height=180)
+                )
+                st.altair_chart(prompt_len_chars_hist, width="stretch")
+            else:
+                st.info("No non-empty prompts available to chart.")
+
+        with plw:
+            st.markdown("##### Words")
+            if len(prompt_len_words_s):
+                c1, c2, c3, c4, c5, c6 = st.columns(6)
+                with c1:
+                    st.metric("N", str(int(prompt_len_words_s.count())))
+                with c2:
+                    st.metric("Mean", f"{float(prompt_len_words_s.mean()):.0f}")
+                with c3:
+                    st.metric("Median", f"{float(prompt_len_words_s.median()):.0f}")
+                with c4:
+                    st.metric("P90", f"{float(prompt_len_words_s.quantile(0.9)):.0f}")
+                with c5:
+                    st.metric("P95", f"{float(prompt_len_words_s.quantile(0.95)):.0f}")
+                with c6:
+                    st.metric("Max", f"{float(prompt_len_words_s.max()):.0f}")
+
+                prompt_len_words_hist = (
+                    alt.Chart(pd.DataFrame({"prompt_len_words": prompt_len_words_s}))
+                    .transform_bin(
+                        as_=["bin_start", "bin_end"],
+                        field="prompt_len_words",
+                        bin=alt.Bin(maxbins=60),
+                    )
+                    .transform_calculate(bin_width="datum.bin_end - datum.bin_start")
+                    .mark_bar()
+                    .encode(
+                        x=alt.X("bin_start:Q", title="Prompt length (words)", bin=alt.Bin(binned=True)),
+                        x2=alt.X2("bin_end:Q"),
+                        y=alt.Y("count()", title="Count"),
+                        tooltip=[
+                            alt.Tooltip("bin_start:Q", title="Bin start", format=","),
+                            alt.Tooltip("bin_end:Q", title="Bin end", format=","),
+                            alt.Tooltip("bin_width:Q", title="Bin width", format=","),
+                            alt.Tooltip("count()", title="Count", format=","),
+                        ],
+                    )
+                    .properties(height=180)
+                )
+                st.altair_chart(prompt_len_words_hist, width="stretch")
+            else:
+                st.info("No non-empty prompts available to chart.")
 
     outcome_chart = outcome_pie_chart(df)
     lang_chart = language_bar_chart(df)

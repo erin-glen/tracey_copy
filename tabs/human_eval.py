@@ -14,6 +14,43 @@ from utils import (
     init_session_state,
 )
 
+
+def _extract_helper_info(trace: dict[str, Any]) -> dict[str, Any]:
+    """Extract AOIs, datasets, and tool names from trace for eval context."""
+    aois: list[str] = []
+    datasets: list[str] = []
+    tools_used: list[str] = []
+
+    out_msgs = ((trace.get("output") or {}).get("messages") or [])
+    for m in out_msgs:
+        if not isinstance(m, dict):
+            continue
+        # Collect tool call names and args
+        for tc in (m.get("tool_calls") or []):
+            if not isinstance(tc, dict):
+                continue
+            name = str(tc.get("name") or "")
+            if name and name not in tools_used:
+                tools_used.append(name)
+            args = tc.get("args") or {}
+            if isinstance(args, dict):
+                # Look for AOI-related args
+                for k in ["aoi", "aoi_name", "aoi_id", "area_of_interest"]:
+                    v = args.get(k)
+                    if v and str(v).strip() and str(v).strip() not in aois:
+                        aois.append(str(v).strip())
+                # Look for dataset-related args
+                for k in ["dataset", "dataset_name", "dataset_id", "layer", "layer_name"]:
+                    v = args.get(k)
+                    if v and str(v).strip() and str(v).strip() not in datasets:
+                        datasets.append(str(v).strip())
+
+    return {
+        "aois": aois,
+        "datasets": datasets,
+        "tools_used": tools_used,
+    }
+
 ENCOURAGEMENT_MESSAGES = [
     "Great start! 🚀",
     "You're on a roll! 🔥",
@@ -104,6 +141,7 @@ def render(
                 answer = final_ai_message(n)
                 if not prompt or not answer:
                     continue
+                helper_info = _extract_helper_info(n)
                 normed.append(
                     {
                         "trace_id": n.get("id"),
@@ -112,6 +150,9 @@ def render(
                         "environment": n.get("environment"),
                         "prompt": prompt,
                         "answer": answer,
+                        "aois": helper_info.get("aois", []),
+                        "datasets": helper_info.get("datasets", []),
+                        "tools_used": helper_info.get("tools_used", []),
                     }
                 )
 
@@ -187,7 +228,7 @@ def render(
         elapsed_r = int(elapsed_s % 60)
         avg_secs = elapsed_s / evaluated_count if evaluated_count else 0
 
-        st.success(f"## 🎉 All done!")
+        st.success("## 🎉 All done!")
         st.markdown(
             f"""
 **Congratulations!** You completed **{evaluated_count}** evaluations in **{elapsed_m}m {elapsed_r}s**.
@@ -230,16 +271,35 @@ Thank you for your contribution! 🙏
 
     def _render_content():
         """Render prompt and output content."""
-        st.markdown(f"**`(⊙_⊙)` User Prompt**")
+        st.markdown("**`(つ ⊙_⊙)つ` User Prompt**")
         if render_md:
             st.markdown(prompt_text)
         else:
             st.code(prompt_text, language=None, wrap_lines=True)
-        st.markdown(f"**`|°_°|` Zeno Output**")
+
+        st.markdown("**`|> °-°|>` Zeno Output**")
         if render_md:
             st.markdown(answer_text)
         else:
             st.code(answer_text, language=None, wrap_lines=True)
+
+        # Helper info expander (collapsed by default)
+        aois = row.get("aois") or []
+        datasets = row.get("datasets") or []
+        tools_used = row.get("tools_used") or []
+        has_helper_info = aois or datasets or tools_used
+        if has_helper_info:
+            with st.expander("📋 Context Helper", expanded=False):
+                cols = st.columns(3)
+                with cols[0]:
+                    st.caption("**AOIs Considered**")
+                    st.write(", ".join(aois) if aois else "—")
+                with cols[1]:
+                    st.caption("**Datasets Considered**")
+                    st.write(", ".join(datasets) if datasets else "—")
+                with cols[2]:
+                    st.caption("**Tools Selected**")
+                    st.write(", ".join(tools_used) if tools_used else "—")
 
     if is_expanded:
         toggle_cols = st.columns([1, 1, 6])

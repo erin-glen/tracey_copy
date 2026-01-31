@@ -21,6 +21,7 @@ from tabs import (
     render_human_eval,
     render_product_dev,
     render_analytics,
+    render_trace_explorer,
 )
 
 
@@ -242,6 +243,7 @@ section[data-testid="stSidebar"] div[data-testid="stDownloadButton"] button:hove
         "🔗 Conversation URLs",
         "✅ Human eval tool",
         "🧠 Product intelligence",
+        "🔎 Trace Explorer",
     ])
 
     with tabs[0]:
@@ -273,6 +275,11 @@ section[data-testid="stSidebar"] div[data-testid="stDownloadButton"] button:hove
         render_product_dev(
             base_thread_url=base_thread_url,
             gemini_api_key=gemini_api_key,
+        )
+
+    with tabs[4]:
+        render_trace_explorer(
+            base_thread_url=base_thread_url,
         )
 
 
