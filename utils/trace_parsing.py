@@ -198,3 +198,168 @@ def extract_trace_context(trace: dict[str, Any]) -> dict[str, Any]:
         "datasets_analysed": datasets_analysed,
         "tools_used": tools_used,
     }
+
+
+# ---------------------------------------------------------------------------
+# Tool call extraction utilities (for agentic flow analysis)
+# ---------------------------------------------------------------------------
+
+_AMBIGUITY_PATTERNS = [
+    "multiple locations named",
+    "which one you meant",
+    "please tell me which",
+    "did you mean",
+    "could you clarify",
+    "which location are you looking for",
+]
+
+
+def extract_tool_calls_and_results(trace: dict[str, Any]) -> list[dict[str, Any]]:
+    """Extract all tool calls and their results from a trace.
+
+    Returns a list of dicts with keys:
+        - tool_name: str
+        - tool_call_id: str
+        - status: str ("success", "error", or "pending" if no result found)
+        - has_ambiguity: bool (True if tool result asks for clarification)
+        - is_semantic_error: bool (True if result content contains error patterns)
+        - input_tokens: int (from usage_metadata on calling AI message)
+        - output_tokens: int
+        - reasoning_tokens: int
+    """
+    out_msgs = ((trace.get("output") or {}).get("messages") or [])
+
+    # Build lookup of tool results by tool_call_id
+    tool_results: dict[str, dict[str, Any]] = {}
+    for m in out_msgs:
+        if not isinstance(m, dict):
+            continue
+        if m.get("type") == "tool" and m.get("tool_call_id"):
+            tool_results[str(m.get("tool_call_id"))] = m
+
+    calls: list[dict[str, Any]] = []
+    for m in out_msgs:
+        if not isinstance(m, dict) or m.get("type") != "ai":
+            continue
+
+        # Extract usage metadata from this AI message
+        usage = m.get("usage_metadata") or {}
+        input_tokens = int(usage.get("input_tokens") or 0)
+        output_tokens = int(usage.get("output_tokens") or 0)
+        output_details = usage.get("output_token_details") or {}
+        reasoning_tokens = int(output_details.get("reasoning") or 0)
+
+        for tc in (m.get("tool_calls") or []):
+            if not isinstance(tc, dict):
+                continue
+            tool_name = str(tc.get("name") or "")
+            tool_call_id = str(tc.get("id") or "")
+
+            result = tool_results.get(tool_call_id)
+            status = "pending"
+            has_ambiguity = False
+            is_semantic_error = False
+
+            if result:
+                status = str(result.get("status") or "success")
+                content = str(result.get("content") or "").lower()
+
+                # Check for ambiguity patterns
+                for pat in _AMBIGUITY_PATTERNS:
+                    if pat in content:
+                        has_ambiguity = True
+                        break
+
+                # Check for semantic errors (API returned error in content)
+                error_patterns = [
+                    "error",
+                    "exception",
+                    "traceback",
+                    "failed",
+                    "missing 'status' key",
+                    "'detail':",
+                    "validation error",
+                ]
+                for pat in error_patterns:
+                    if pat in content:
+                        is_semantic_error = True
+                        break
+
+            calls.append({
+                "tool_name": tool_name,
+                "tool_call_id": tool_call_id,
+                "status": status,
+                "has_ambiguity": has_ambiguity,
+                "is_semantic_error": is_semantic_error,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "reasoning_tokens": reasoning_tokens,
+            })
+
+    return calls
+
+
+def extract_tool_flow(trace: dict[str, Any]) -> list[tuple[str, str]]:
+    """Extract tool call sequence as list of (tool_name, status) tuples.
+
+    Status is one of: "success", "error", "ambiguity", "semantic_error".
+    """
+    calls = extract_tool_calls_and_results(trace)
+    flow: list[tuple[str, str]] = []
+    for c in calls:
+        if c["has_ambiguity"]:
+            status = "ambiguity"
+        elif c["is_semantic_error"]:
+            status = "semantic_error"
+        elif c["status"] == "error":
+            status = "error"
+        else:
+            status = "success"
+        flow.append((c["tool_name"], status))
+    return flow
+
+
+def extract_usage_metadata(trace: dict[str, Any]) -> dict[str, Any]:
+    """Aggregate usage metadata across all AI messages in a trace.
+
+    Returns dict with keys:
+        - total_input_tokens: int
+        - total_output_tokens: int
+        - total_reasoning_tokens: int
+        - reasoning_ratio: float (reasoning / output, or 0 if no output)
+        - tool_call_count: int
+    """
+    out_msgs = ((trace.get("output") or {}).get("messages") or [])
+
+    total_input = 0
+    total_output = 0
+    total_reasoning = 0
+    tool_call_count = 0
+
+    for m in out_msgs:
+        if not isinstance(m, dict) or m.get("type") != "ai":
+            continue
+
+        usage = m.get("usage_metadata") or {}
+        total_input += int(usage.get("input_tokens") or 0)
+        total_output += int(usage.get("output_tokens") or 0)
+        output_details = usage.get("output_token_details") or {}
+        total_reasoning += int(output_details.get("reasoning") or 0)
+
+        tool_call_count += len(m.get("tool_calls") or [])
+
+    reasoning_ratio = total_reasoning / total_output if total_output > 0 else 0.0
+
+    return {
+        "total_input_tokens": total_input,
+        "total_output_tokens": total_output,
+        "total_reasoning_tokens": total_reasoning,
+        "reasoning_ratio": reasoning_ratio,
+        "tool_call_count": tool_call_count,
+    }
+
+
+def trace_has_internal_error(trace: dict[str, Any]) -> bool:
+    """Check if any tool call in trace had a semantic/API error."""
+    calls = extract_tool_calls_and_results(trace)
+    return any(c["is_semantic_error"] or c["status"] == "error" for c in calls)

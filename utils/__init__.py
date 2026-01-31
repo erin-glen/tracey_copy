@@ -12,6 +12,10 @@ from utils.trace_parsing import (
     final_ai_message,
     classify_outcome,
     extract_trace_context,
+    extract_tool_calls_and_results,
+    extract_tool_flow,
+    extract_usage_metadata,
+    trace_has_internal_error,
 )
 from utils.data_helpers import (
     maybe_load_dotenv,
@@ -41,6 +45,11 @@ from utils.charts import (
     cost_histogram,
     category_pie_chart,
     success_rate_bar_chart,
+    tool_success_rate_chart,
+    tool_calls_vs_latency_chart,
+    reasoning_tokens_histogram,
+    tool_flow_sankey_data,
+    tool_flow_arc_chart,
 )
 
 __all__ = [
@@ -55,6 +64,10 @@ __all__ = [
     "final_ai_message",
     "classify_outcome",
     "extract_trace_context",
+    "extract_tool_calls_and_results",
+    "extract_tool_flow",
+    "extract_usage_metadata",
+    "trace_has_internal_error",
     # Data helpers
     "maybe_load_dotenv",
     "iso_utc",
@@ -81,4 +94,9 @@ __all__ = [
     "cost_histogram",
     "category_pie_chart",
     "success_rate_bar_chart",
+    "tool_success_rate_chart",
+    "tool_calls_vs_latency_chart",
+    "reasoning_tokens_histogram",
+    "tool_flow_sankey_data",
+    "tool_flow_arc_chart",
 ]

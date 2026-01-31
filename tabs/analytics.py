@@ -21,6 +21,10 @@ from utils import (
     final_ai_message,
     classify_outcome,
     extract_trace_context,
+    extract_tool_calls_and_results,
+    extract_tool_flow,
+    extract_usage_metadata,
+    trace_has_internal_error,
     as_float,
     safe_json_loads,
     strip_code_fences,
@@ -37,6 +41,10 @@ from utils import (
     cost_histogram,
     category_pie_chart,
     success_rate_bar_chart,
+    tool_success_rate_chart,
+    tool_calls_vs_latency_chart,
+    reasoning_tokens_histogram,
+    tool_flow_sankey_data,
 )
 
 
@@ -55,6 +63,18 @@ def render(
 ) -> None:
     """Render the Trace Analytics Reports tab."""
     st.subheader("Trace stats for selected date range")
+
+    st.markdown(
+        """
+<style>
+div[data-testid="stMetric"] * { line-height: 1.1; }
+div[data-testid="stMetric"] [data-testid="stMetricLabel"] { font-size: 0.75rem; }
+div[data-testid="stMetric"] [data-testid="stMetricValue"] { font-size: 1.0rem; }
+div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; }
+</style>
+        """,
+        unsafe_allow_html=True,
+    )
 
     if "stats_traces" not in st.session_state:
         st.session_state.stats_traces = []
@@ -82,6 +102,8 @@ def render(
         outcome = classify_outcome(n, answer or "")
 
         ctx = extract_trace_context(n)
+        usage = extract_usage_metadata(n)
+        has_internal_err = trace_has_internal_error(n)
 
         rows.append(
             {
@@ -99,6 +121,12 @@ def render(
                 "aoi_name": ctx.get("aoi_name", ""),
                 "aoi_type": ctx.get("aoi_type", ""),
                 "datasets_analysed": ", ".join(ctx.get("datasets_analysed", [])),
+                "tool_call_count": usage.get("tool_call_count", 0),
+                "total_input_tokens": usage.get("total_input_tokens", 0),
+                "total_output_tokens": usage.get("total_output_tokens", 0),
+                "total_reasoning_tokens": usage.get("total_reasoning_tokens", 0),
+                "reasoning_ratio": usage.get("reasoning_ratio", 0.0),
+                "has_internal_error": has_internal_err,
             }
         )
 
@@ -449,22 +477,22 @@ def render(
 
     summary_tbl = pd.DataFrame(
         [
-            {"Section": "Volume", "Metric": "Total traces", "Value": f"{total_traces:,}"},
-            {"Section": "Volume", "Metric": "Unique users", "Value": f"{unique_users:,}"},
-            {"Section": "Volume", "Metric": "Unique threads", "Value": f"{unique_threads:,}"},
-            {"Section": "Outcomes", "Metric": "Success rate", "Value": f"{success_rate:.1%}"},
-            {"Section": "Outcomes", "Metric": "Defer rate", "Value": f"{defer_rate:.1%}"},
-            {"Section": "Outcomes", "Metric": "Soft error rate", "Value": f"{soft_error_rate:.1%}"},
-            {"Section": "Outcomes", "Metric": "Error rate", "Value": f"{error_rate:.1%}"},
-            {"Section": "Performance", "Metric": "Mean cost", "Value": f"${mean_cost:.4f}"},
-            {"Section": "Performance", "Metric": "Median cost", "Value": f"${median_cost:.4f}"},
-            {"Section": "Performance", "Metric": "p95 cost", "Value": f"${p95_cost:.4f}"},
-            {"Section": "Performance", "Metric": "Average latency", "Value": f"{avg_latency:.2f}s"},
-            {"Section": "Performance", "Metric": "P95 latency", "Value": f"{p95_latency:.2f}s"},
-            {"Section": "Prompt utilisation", "Metric": "User-days", "Value": f"{util_user_days:,}"},
-            {"Section": "Prompt utilisation", "Metric": "Mean prompts/user/day", "Value": f"{util_mean_prompts:.2f}"},
-            {"Section": "Prompt utilisation", "Metric": "Median prompts/user/day", "Value": f"{util_median_prompts:.0f}"},
-            {"Section": "Prompt utilisation", "Metric": "p95 prompts/user/day", "Value": f"{util_p95_prompts:.0f}"},
+            {"Section": "Volume", "Metric": "Total traces", "Value": f"{total_traces:,}", "Description": "Total number of API calls/prompts in the period"},
+            {"Section": "Volume", "Metric": "Unique users", "Value": f"{unique_users:,}", "Description": "Distinct user IDs that made at least one request"},
+            {"Section": "Volume", "Metric": "Unique threads", "Value": f"{unique_threads:,}", "Description": "Distinct conversation sessions (multi-turn chats)"},
+            {"Section": "Outcomes", "Metric": "Success rate", "Value": f"{success_rate:.1%}", "Description": "% of traces that returned a valid answer"},
+            {"Section": "Outcomes", "Metric": "Defer rate", "Value": f"{defer_rate:.1%}", "Description": "% of traces where the system deferred (e.g. out of scope)"},
+            {"Section": "Outcomes", "Metric": "Soft error rate", "Value": f"{soft_error_rate:.1%}", "Description": "% of traces with partial/soft failures"},
+            {"Section": "Outcomes", "Metric": "Error rate", "Value": f"{error_rate:.1%}", "Description": "% of traces with hard errors or exceptions"},
+            {"Section": "Performance", "Metric": "Mean cost", "Value": f"${mean_cost:.4f}", "Description": "Average LLM cost per trace"},
+            {"Section": "Performance", "Metric": "Median cost", "Value": f"${median_cost:.4f}", "Description": "Middle value of cost distribution (less sensitive to outliers)"},
+            {"Section": "Performance", "Metric": "p95 cost", "Value": f"${p95_cost:.4f}", "Description": "95th percentile cost (only 5% of traces cost more)"},
+            {"Section": "Performance", "Metric": "Average latency", "Value": f"{avg_latency:.2f}s", "Description": "Mean time from request to response"},
+            {"Section": "Performance", "Metric": "P95 latency", "Value": f"{p95_latency:.2f}s", "Description": "95th percentile latency (worst-case for most users)"},
+            {"Section": "Engagement", "Metric": "User-days", "Value": f"{util_user_days:,}", "Description": "Total user × day combinations (one user on 3 days = 3)"},
+            {"Section": "Engagement", "Metric": "Mean prompts/user/day", "Value": f"{util_mean_prompts:.2f}", "Description": "Average number of prompts a user sends per active day"},
+            {"Section": "Engagement", "Metric": "Median prompts/user/day", "Value": f"{util_median_prompts:.0f}", "Description": "Typical prompts per user per day (less skewed by power users)"},
+            {"Section": "Engagement", "Metric": "p95 prompts/user/day", "Value": f"{util_p95_prompts:.0f}", "Description": "Top 5% of users send this many prompts or more per day"},
         ]
     )
     st.dataframe(summary_tbl, width="stretch", hide_index=True)
@@ -500,7 +528,7 @@ def render(
     with st.expander("Raw rows"):
         st.dataframe(df, width="stretch")
 
-    st.markdown("### Prompt utilisation")
+    st.markdown("### Prompt utilisation", help="How intensively users are engaging with the system. Higher prompts/user/day suggests stickier product usage.")
     if "date" not in df.columns or "user_id" not in df.columns:
         st.info("Prompt utilisation requires both date and user_id.")
     else:
@@ -518,6 +546,10 @@ def render(
                 left, right = st.columns(2)
 
                 with left:
+                    st.markdown(
+                        "#### Prompts per user per day (distribution)",
+                        help="Histogram of how many prompts users send on an active day. Helps spot power users and typical usage.",
+                    )
                     hist = (
                         alt.Chart(user_day_counts)
                         .mark_bar()
@@ -529,6 +561,7 @@ def render(
                             ),
                             y=alt.Y("count():Q", title="User-days"),
                             tooltip=[
+                                alt.Tooltip("prompts:Q", title="Prompts/user/day", bin=True),
                                 alt.Tooltip("count():Q", title="User-days"),
                             ],
                         )
@@ -537,6 +570,10 @@ def render(
                     st.altair_chart(hist, width="stretch")
 
                 with right:
+                    st.markdown(
+                        "#### Prompts per user per day (daily)",
+                        help="Daily mean/median/p95 prompts per active user. Good for monitoring engagement and limiting behaviour.",
+                    )
                     daily_user_prompt = (
                         user_day_counts.groupby("date", dropna=True)
                         .agg(
@@ -629,7 +666,7 @@ def render(
             .sort_values("date")
         )
 
-        st.markdown("### Daily trends")
+        st.markdown("### Daily trends", help="Track how key metrics change over time. Look for anomalies, regressions, or improvements day-over-day.")
 
         vol_chart = daily_volume_chart(daily_metrics)
         out_chart = daily_outcome_chart(daily_metrics)
@@ -638,15 +675,67 @@ def render(
 
         row1_c1, row1_c2 = st.columns(2)
         with row1_c1:
+            st.markdown("#### Daily volume", help="Daily traces, unique users, and unique threads.")
             st.altair_chart(vol_chart, width="stretch")
         with row1_c2:
+            st.markdown("#### Daily outcomes", help="Daily mix of success/defer/errors as rates.")
             st.altair_chart(out_chart, width="stretch")
 
         row2_c1, row2_c2 = st.columns(2)
         with row2_c1:
+            st.markdown("#### Daily cost", help="Mean and p95 LLM cost per day.")
             st.altair_chart(cost_chart, width="stretch")
         with row2_c2:
+            st.markdown("#### Daily latency", help="Mean and p95 latency per day.")
             st.altair_chart(lat_chart, width="stretch")
+
+        # Additional insight: User activity over time (new vs returning)
+        if "user_id" in base_daily.columns:
+            user_first_seen = base_daily.groupby("user_id")["date"].min().reset_index()
+            user_first_seen.columns = ["user_id", "first_seen"]
+            base_daily_with_first = base_daily.merge(user_first_seen, on="user_id", how="left")
+            base_daily_with_first["is_new"] = base_daily_with_first["date"] == base_daily_with_first["first_seen"]
+
+            new_returning = (
+                base_daily_with_first.groupby("date")
+                .agg(
+                    new_users=("is_new", "sum"),
+                    returning_users=("is_new", lambda x: int((~x).sum())),
+                )
+                .reset_index()
+            )
+
+            if len(new_returning) > 1:
+                st.markdown("#### New vs Returning users", help="New users are seeing the product for the first time in this dataset. Returning users have been active on a previous day.")
+                new_returning["day_total_users"] = new_returning["new_users"] + new_returning["returning_users"]
+                nr_long = new_returning.melt(
+                    id_vars=["date", "day_total_users"],
+                    value_vars=["new_users", "returning_users"],
+                    var_name="user_type",
+                    value_name="count",
+                )
+                nr_long["pct_of_day"] = nr_long["count"] / nr_long["day_total_users"].clip(lower=1)
+                nr_long["user_type"] = nr_long["user_type"].replace({
+                    "new_users": "New",
+                    "returning_users": "Returning",
+                })
+                nr_chart = (
+                    alt.Chart(nr_long)
+                    .mark_bar(size=17)
+                    .encode(
+                        x=alt.X("date:T", title="Date"),
+                        y=alt.Y("count:Q", title="Users", stack=True),
+                        color=alt.Color("user_type:N", title="User type", sort=["New", "Returning"]),
+                        tooltip=[
+                            alt.Tooltip("date:T", title="Date"),
+                            alt.Tooltip("user_type:N", title="Type"),
+                            alt.Tooltip("count:Q", title="Users", format=","),
+                            alt.Tooltip("pct_of_day:Q", title="% of users that day", format=".1%"),
+                        ],
+                    )
+                    .properties(height=220)
+                )
+                st.altair_chart(nr_chart, width="stretch")
 
     def _norm_prompt(s: Any) -> str:
         if not isinstance(s, str):
@@ -693,11 +782,15 @@ def render(
 
         starter_only = starter_label[starter_label != "Other"]
 
-        st.markdown("### Starter prompt mix")
+        st.markdown("### Starter prompt mix", help="Starter prompts are pre-defined suggestions shown to users. Track which ones drive engagement vs. custom queries.")
 
         left, right = st.columns(2)
 
         with left:
+            st.markdown(
+                "#### Starter vs other prompts",
+                help="Share of prompts that match your pre-defined starter prompt library.",
+            )
             starter_vs_other = pd.DataFrame(
                 [
                     {"label": "Starter", "count": starter_count},
@@ -725,6 +818,10 @@ def render(
             st.altair_chart(starter_vs_other_chart, width="stretch")
 
         with right:
+            st.markdown(
+                "#### Starter prompt breakdown",
+                help="Which starter prompts are being used most.",
+            )
             starter_breakdown = starter_only.value_counts().reset_index()
             starter_breakdown.columns = ["label", "count"]
             starter_breakdown["percent"] = (
@@ -747,7 +844,7 @@ def render(
             )
             st.altair_chart(starter_breakdown_chart, width="stretch")
 
-    st.markdown("### Distributions & Breakdowns")
+    st.markdown("### Distributions & Breakdowns", help="Understand the shape of your data. Histograms reveal outliers, skew, and typical values better than averages alone.")
 
     if ("prompt_len_chars" in df.columns or "prompt_len_words" in df.columns) and len(df):
         prompt_len_chars_s = df["prompt_len_chars"].dropna() if "prompt_len_chars" in df.columns else pd.Series(dtype="float")
@@ -759,7 +856,10 @@ def render(
         plc, plw = st.columns(2)
 
         with plc:
-            st.markdown("##### Characters")
+            st.markdown(
+                "##### Characters",
+                help="Prompt length in characters. Helps spot unusually long prompts that may increase cost/latency.",
+            )
             if len(prompt_len_chars_s):
                 c1, c2, c3, c4, c5, c6 = st.columns(6)
                 with c1:
@@ -802,7 +902,10 @@ def render(
                 st.info("No non-empty prompts available to chart.")
 
         with plw:
-            st.markdown("##### Words")
+            st.markdown(
+                "##### Words",
+                help="Prompt length in words. Useful for understanding typical query complexity.",
+            )
             if len(prompt_len_words_s):
                 c1, c2, c3, c4, c5, c6 = st.columns(6)
                 with c1:
@@ -851,20 +954,61 @@ def render(
 
     dist_c1, dist_c2 = st.columns(2)
     with dist_c1:
+        st.markdown("#### Outcome breakdown", help="Overall outcome mix across the selected period.")
         st.altair_chart(outcome_chart, width="stretch")
-        if lat_chart_dist:
-            st.altair_chart(lat_chart_dist, width="stretch")
     with dist_c2:
         if lang_chart:
+            st.markdown("#### Top prompt languages", help="Detected languages for prompts (best-effort via langid).")
             st.altair_chart(lang_chart, width="stretch")
-        if cost_chart_dist:
-            st.altair_chart(cost_chart_dist, width="stretch")
 
-    st.markdown("### GNW analysis usage")
+    st.markdown("#### Cost & Latency distributions", help="See how cost and latency are distributed across traces. p95 is a good measure of worst-case experience.")
+
+    perf_c1, perf_c2 = st.columns(2)
+    with perf_c1:
+        st.markdown("##### Latency", help="Latency distribution and summary stats for the selected period.")
+        if len(lat_s):
+            lc1, lc2, lc3, lc4, lc5 = st.columns(5)
+            with lc1:
+                st.metric("Total traces", f"{int(lat_s.count()):,}")
+            with lc2:
+                st.metric("Mean", f"{float(lat_s.mean()):.2f}s")
+            with lc3:
+                st.metric("Median", f"{float(lat_s.median()):.2f}s")
+            with lc4:
+                st.metric("P95", f"{float(lat_s.quantile(0.95)):.2f}s")
+            with lc5:
+                st.metric("Max", f"{float(lat_s.max()):.2f}s")
+            if lat_chart_dist:
+                st.altair_chart(lat_chart_dist, width="stretch")
+        else:
+            st.info("No latency data available.")
+
+    with perf_c2:
+        st.markdown("##### Cost", help="Cost distribution and summary stats for the selected period.")
+        if len(cost_s):
+            total_cost = float(cost_s.sum())
+            cc1, cc2, cc3, cc4, cc5 = st.columns(5)
+            with cc1:
+                st.metric("Total", f"${total_cost:.2f}")
+            with cc2:
+                st.metric("Mean", f"${float(cost_s.mean()):.4f}")
+            with cc3:
+                st.metric("Median", f"${float(cost_s.median()):.4f}")
+            with cc4:
+                st.metric("P95", f"${float(cost_s.quantile(0.95)):.4f}")
+            with cc5:
+                st.metric("Max", f"${float(cost_s.max()):.4f}")
+            if cost_chart_dist:
+                st.altair_chart(cost_chart_dist, width="stretch")
+        else:
+            st.info("No cost data available.")
+
+    st.markdown("### GNW analysis usage", help="Product-specific metrics: which datasets, AOIs, and analysis types users are requesting.")
 
     pie_c1, pie_c2 = st.columns(2)
     with pie_c1:
         if "datasets_analysed" in df.columns:
+            st.markdown("#### Datasets analysed", help="Datasets referenced in successful analyses (from trace context).")
             chart = category_pie_chart(df["datasets_analysed"], "dataset", "Datasets analysed", explode_csv=True)
             if chart:
                 st.altair_chart(chart, width="stretch")
@@ -888,6 +1032,7 @@ def render(
                     aoi_type_df["count"] / max(1, int(aoi_type_df["count"].sum())) * 100
                 ).round(1)
                 aoi_type_scale = alt.Scale(domain=aoi_type_domain, scheme="tableau10")
+                st.markdown("#### AOI type", help="What kinds of areas users are analysing (e.g., country, admin region, drawn polygon).")
                 chart = (
                     alt.Chart(aoi_type_df)
                     .mark_arc(innerRadius=50)
@@ -953,37 +1098,277 @@ def render(
                 )
                 .properties(title="AOI selection counts", height=420)
             )
+            st.markdown("#### AOI selection counts", help="Most commonly analysed places (AOIs) in this dataset.")
             st.altair_chart(chart, width="stretch")
+
+    # -------------------------------------------------------------------------
+    # Agentic Flow Analysis Section
+    # -------------------------------------------------------------------------
+    st.markdown(
+        "### Agentic Flow Analysis",
+        help="Deep dive into tool usage patterns, agent loops, token consumption, and internal vs user-visible errors.",
+    )
+
+    # Aggregate tool call stats across all traces
+    all_tool_calls: list[dict[str, Any]] = []
+    traces_with_ambiguity = 0
+    for n in normed:
+        calls = extract_tool_calls_and_results(n)
+        all_tool_calls.extend(calls)
+        if any(c["has_ambiguity"] for c in calls):
+            traces_with_ambiguity += 1
+
+    # 1A: Tool flow visualization
+    st.markdown(
+        "#### Tool call flow",
+        help="Visualize how tool calls flow from START through tools to END. Line thickness = count, color = outcome status.",
+    )
+    flow_df = tool_flow_sankey_data(normed, extract_tool_flow)
+    if len(flow_df):
+        total_flows = int(flow_df["count"].sum())
+        status_counts = (
+            flow_df.groupby("status")["count"]
+            .sum()
+            .reset_index()
+            .rename(columns={"count": "transitions"})
+        )
+        status_counts["percent"] = status_counts["transitions"] / max(1, total_flows) * 100
+
+        total_traces_with_tools = sum(1 for n in normed if extract_tool_calls_and_results(n))
+
+        flow_pie = (
+            alt.Chart(status_counts)
+            .mark_arc(innerRadius=55)
+            .encode(
+                theta=alt.Theta("transitions:Q", title="Transitions"),
+                color=alt.Color("status:N", title="Status"),
+                tooltip=[
+                    alt.Tooltip("status:N", title="Status"),
+                    alt.Tooltip("transitions:Q", title="Transitions", format=","),
+                    alt.Tooltip("percent:Q", title="%", format=".1f"),
+                ],
+            )
+            .properties(height=220)
+        )
+
+        clarity_df = pd.DataFrame(
+            [
+                {"label": "Clarification needed", "count": int(traces_with_ambiguity)},
+                {"label": "No clarification", "count": int(total_traces_with_tools - traces_with_ambiguity)},
+            ]
+        )
+        clarity_df["percent"] = clarity_df["count"] / max(1, int(clarity_df["count"].sum())) * 100
+        clarity_pie = (
+            alt.Chart(clarity_df)
+            .mark_arc(innerRadius=55)
+            .encode(
+                theta=alt.Theta("count:Q", title="Traces"),
+                color=alt.Color("label:N", title=""),
+                tooltip=[
+                    alt.Tooltip("label:N", title=""),
+                    alt.Tooltip("count:Q", title="Traces", format=","),
+                    alt.Tooltip("percent:Q", title="%", format=".1f"),
+                ],
+            )
+            .properties(height=220)
+        )
+
+        pie_left, pie_right = st.columns(2)
+        with pie_left:
+            st.markdown(
+                "##### Tool call flow (status)",
+                help="Breakdown of transition outcomes (success, ambiguity, semantic error, error) across all tool transitions.",
+            )
+            st.altair_chart(flow_pie, width="stretch")
+        with pie_right:
+            st.markdown(
+                "##### Clarification loop rate",
+                help="Share of traces that triggered a clarification request (e.g. ambiguous AOI).",
+            )
+            if total_traces_with_tools > 0:
+                st.altair_chart(clarity_pie, width="stretch")
+            else:
+                st.info("No tool calls found to calculate clarification rate.")
+
+        # Show flow as table for exact values
+        flow_summary = (
+            flow_df.groupby(["source", "target", "status"])["count"]
+            .sum()
+            .reset_index()
+            .sort_values("count", ascending=False)
+            .head(20)
+        )
+        with st.expander("Top 20 tool transitions", expanded=False):
+            st.dataframe(flow_summary, hide_index=True, use_container_width=True)
+    else:
+        st.info("No tool calls found in traces.")
+
+    # 1B: Tool success rate by tool name
+    if all_tool_calls:
+        st.markdown(
+            "#### Tool success rate by tool",
+            help="Stacked bar showing outcomes (success, ambiguity, semantic error, error) for each tool.",
+        )
+        tool_calls_df = pd.DataFrame(all_tool_calls)
+        tool_stats = (
+            tool_calls_df.groupby("tool_name")
+            .agg(
+                total=("tool_name", "count"),
+                success=("status", lambda x: int((x == "success").sum()) - int(tool_calls_df.loc[x.index, "has_ambiguity"].sum()) - int(tool_calls_df.loc[x.index, "is_semantic_error"].sum())),
+                ambiguity=("has_ambiguity", "sum"),
+                semantic_error=("is_semantic_error", "sum"),
+                error=("status", lambda x: int((x == "error").sum())),
+            )
+            .reset_index()
+        )
+        # Fix negative success counts
+        tool_stats["success"] = tool_stats["success"].clip(lower=0)
+        tool_stats = tool_stats.sort_values("total", ascending=False)
+
+        chart = tool_success_rate_chart(tool_stats)
+        if chart:
+            st.altair_chart(chart, use_container_width=True)
+
+    # 1C: Ambiguity rate details (the pie is shown above next to Tool call flow)
+    if total_traces_with_tools > 0:
+        with st.expander("Clarification counts", expanded=False):
+            st.dataframe(clarity_df, hide_index=True, use_container_width=True)
+
+    # 2E: Reasoning tokens histogram
+    if "reasoning_ratio" in df.columns:
+        reasoning_ratios = df["reasoning_ratio"].dropna()
+        reasoning_ratios = reasoning_ratios[reasoning_ratios > 0]
+        if len(reasoning_ratios):
+            st.markdown(
+                "#### Reasoning tokens distribution",
+                help="How much of output tokens are spent on 'reasoning' (chain-of-thought). High ratios may indicate overthinking or complex queries.",
+            )
+            rc1, rc2, rc3, rc4 = st.columns(4)
+            with rc1:
+                st.metric("Traces with reasoning", f"{len(reasoning_ratios):,}")
+            with rc2:
+                st.metric("Mean ratio", f"{reasoning_ratios.mean():.1%}")
+            with rc3:
+                st.metric("Median ratio", f"{reasoning_ratios.median():.1%}")
+            with rc4:
+                st.metric("P90 ratio", f"{reasoning_ratios.quantile(0.9):.1%}")
+
+            chart = reasoning_tokens_histogram(reasoning_ratios)
+            if chart:
+                st.altair_chart(chart, use_container_width=True)
+
+    # 3G: Tool calls vs latency scatter
+    if "tool_call_count" in df.columns and "latency_seconds" in df.columns:
+        plot_df = df[["tool_call_count", "latency_seconds", "outcome"]].dropna()
+        if len(plot_df) and plot_df["tool_call_count"].max() > 0:
+            st.markdown(
+                "#### Tool calls vs latency",
+                help="Scatter plot showing relationship between number of tool calls and trace latency. Trend line shows correlation.",
+            )
+            tc1, tc2, tc3 = st.columns(3)
+            with tc1:
+                st.metric("Max tool calls", f"{int(plot_df['tool_call_count'].max()):,}")
+            with tc2:
+                st.metric("Avg tool calls", f"{plot_df['tool_call_count'].mean():.1f}")
+            with tc3:
+                corr = plot_df["tool_call_count"].corr(plot_df["latency_seconds"])
+                st.metric("Correlation", f"{corr:.2f}" if pd.notna(corr) else "N/A")
+
+            chart = tool_calls_vs_latency_chart(plot_df)
+            if chart:
+                st.altair_chart(chart, use_container_width=True)
+
+    # 4J: Internal vs user-visible error rate (supplements outcome chart)
+    if "has_internal_error" in df.columns and "outcome" in df.columns:
+        st.markdown(
+            "#### Internal vs user-visible errors",
+            help="Compare internal tool/API failures with errors visible in the final answer. Internal errors may be masked by agent recovery.",
+        )
+        internal_error_count = int(df["has_internal_error"].sum())
+        user_visible_error_count = int((df["outcome"].isin(["ERROR", "SOFT_ERROR"])).sum())
+        total_traces = len(df)
+
+        # Traces with internal error that still succeeded (agent recovered)
+        recovered = int(((df["has_internal_error"]) & (df["outcome"] == "ANSWER")).sum())
+
+        hidden_errors = max(0, internal_error_count - user_visible_error_count)
+
+        err_pie_df = pd.DataFrame(
+            [
+                {"label": "No internal error", "count": int(total_traces - internal_error_count)},
+                {"label": "Internal error", "count": int(internal_error_count)},
+            ]
+        )
+        err_pie_df["percent"] = err_pie_df["count"] / max(1, int(err_pie_df["count"].sum())) * 100
+        err_pie = (
+            alt.Chart(err_pie_df)
+            .mark_arc(innerRadius=55)
+            .encode(
+                theta=alt.Theta("count:Q", title="Traces"),
+                color=alt.Color("label:N", title=""),
+                tooltip=[
+                    alt.Tooltip("label:N", title=""),
+                    alt.Tooltip("count:Q", title="Traces", format=","),
+                    alt.Tooltip("percent:Q", title="%", format=".1f"),
+                ],
+            )
+            .properties(height=220)
+        )
+        st.altair_chart(err_pie, width="stretch")
+
+        with st.expander("Error metrics", expanded=False):
+            ec1, ec2, ec3, ec4 = st.columns(4)
+            with ec1:
+                st.metric("Internal errors", f"{internal_error_count:,}", delta=f"{internal_error_count/max(1,total_traces)*100:.1f}%")
+            with ec2:
+                st.metric("User-visible errors", f"{user_visible_error_count:,}", delta=f"{user_visible_error_count/max(1,total_traces)*100:.1f}%")
+            with ec3:
+                st.metric("Agent recovered", f"{recovered:,}")
+            with ec4:
+                st.metric("Hidden errors", f"{hidden_errors:,}")
+
+        # Breakdown table
+        error_breakdown = pd.DataFrame([
+            {"Category": "Internal tool/API errors", "Count": internal_error_count, "Rate": internal_error_count / max(1, total_traces)},
+            {"Category": "User-visible errors (ERROR/SOFT_ERROR)", "Count": user_visible_error_count, "Rate": user_visible_error_count / max(1, total_traces)},
+            {"Category": "Agent recovered from internal error", "Count": recovered, "Rate": recovered / max(1, total_traces)},
+        ])
+        error_breakdown["Rate"] = error_breakdown["Rate"].map(lambda x: f"{x:.1%}")
+        with st.expander("Error breakdown", expanded=False):
+            st.dataframe(error_breakdown, hide_index=True, use_container_width=True)
 
     if has_enrichment_cache and is_default_enrich_prompt:
         has_enrich_data = any(
             col in df.columns for col in ["enrich_query_flavour", "enrich_topics", "enrich_datasets"]
         )
         if has_enrich_data:
-            st.markdown("### Enrichment Insights")
+            st.markdown("### Enrichment Insights", help="AI-generated classifications of user prompts: query type, topics, and datasets mentioned.")
 
             pie_c1, pie_c2, pie_c3 = st.columns(3)
 
             with pie_c1:
                 if "enrich_query_flavour" in df.columns:
+                    st.markdown("#### Query flavour", help="High-level intent type for queries (e.g., compare, trend, explain).")
                     chart = category_pie_chart(df["enrich_query_flavour"], "query_flavour", "Query flavour")
                     if chart:
                         st.altair_chart(chart, width="stretch")
 
             with pie_c2:
                 if "enrich_topics" in df.columns:
+                    st.markdown("#### Top topics", help="Most common topics inferred from prompts.")
                     chart = category_pie_chart(df["enrich_topics"], "topic", "Top topics", explode_csv=True)
                     if chart:
                         st.altair_chart(chart, width="stretch")
 
             with pie_c3:
                 if "enrich_datasets" in df.columns:
+                    st.markdown("#### Top datasets", help="Most commonly mentioned datasets inferred from prompts.")
                     chart = category_pie_chart(df["enrich_datasets"], "dataset", "Top datasets", explode_csv=True)
                     if chart:
                         st.altair_chart(chart, width="stretch")
 
     if has_enrichment_cache:
-        st.markdown("### Prompt enrichment")
+        st.markdown("### Prompt enrichment", help="Detailed breakdowns by enrichment categories. Useful for finding which query types have lower success rates.")
 
         breakdown_top_n = st.number_input("Breakdowns: top N categories", min_value=3, max_value=50, value=15)
 
