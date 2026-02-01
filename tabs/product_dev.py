@@ -317,7 +317,7 @@ def _render_evidence_mining(
                     "url": f"{base_thread_url.rstrip('/')}/{r.get('session_id')}" if r.get("session_id") else "",
                 }
             )
-        st.dataframe(table_rows, use_container_width=True)
+        st.dataframe(table_rows, width="stretch")
 
         evidence_csv_bytes = csv_bytes_any(table_rows)
 
@@ -515,7 +515,7 @@ def _render_tagging(
             d["prompt"] = (d.get("prompt") or "")[:100] + "..."
             d["answer"] = (d.get("answer") or "")[:100] + "..."
 
-        st.dataframe(display_data, use_container_width=True)
+        st.dataframe(display_data, width="stretch")
 
         csv_bytes = csv_bytes_any([{**r, "url": f"{base_thread_url.rstrip('/')}/{r.get('session_id')}" if r.get("session_id") else ""} for r in results])
 
@@ -610,7 +610,7 @@ def _render_gap_analysis(
                         "url": f"{base_thread_url.rstrip('/')}/{r.get('session_id')}" if r.get("session_id") else "",
                     }
                 )
-            st.dataframe(gap_table_rows, use_container_width=True)
+            st.dataframe(gap_table_rows, width="stretch")
 
             gap_csv_bytes = csv_bytes_any(gap_table_rows)
 

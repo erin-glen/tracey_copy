@@ -71,10 +71,17 @@ def render(
         "human_eval_streak": 0,
         "human_eval_showed_balloons": False,
         "human_eval_evaluator_name": "",
+        "human_eval_current_trace_id": "",
+        "human_eval_clear_notes_next_run": False,
+        "_eval_notes": "",
         "human_eval_filter_criteria": "",
         "human_eval_filter_model": "",
         "human_eval_filter_cache": {},
     })
+
+    if bool(st.session_state.get("human_eval_clear_notes_next_run")):
+        st.session_state["_eval_notes"] = ""
+        st.session_state.human_eval_clear_notes_next_run = False
 
     def _call_gemini(api_key: str, model_name: str, prompt: str) -> str:
         import google.generativeai as genai
@@ -309,7 +316,7 @@ def render(
 
                 preview_df = matched_rows[:5]
                 if preview_df:
-                    st.dataframe(preview_df, hide_index=True, use_container_width=True)
+                    st.dataframe(preview_df, hide_index=True, width="stretch")
                 else:
                     st.info("No matched examples to preview yet.")
 
@@ -423,6 +430,7 @@ def render(
     idx = max(0, min(idx, len(samples) - 1))
     st.session_state.human_eval_index = idx
     row = samples[idx]
+    trace_id = str(row.get("trace_id") or "")
 
     if st.session_state.human_eval_completed:
         if not st.session_state.human_eval_showed_balloons:
@@ -469,8 +477,11 @@ Thank you for your contribution! 🙏
 
     prompt_text = str(row.get("prompt", "") or "")
     answer_text = str(row.get("answer", "") or "")
-    existing = st.session_state.human_eval_annotations.get(str(row.get("trace_id") or ""), {})
-    current_rating = existing.get("rating", "")
+    existing = st.session_state.human_eval_annotations.get(trace_id, {})
+
+    if str(st.session_state.get("human_eval_current_trace_id") or "") != trace_id:
+        st.session_state.human_eval_current_trace_id = trace_id
+        st.session_state["_eval_notes"] = str(existing.get("notes") or "")
     url = f"{base_thread_url.rstrip('/')}/{row.get('session_id')}" if row.get("session_id") else ""
 
     def _render_content():
@@ -527,42 +538,35 @@ Thank you for your contribution! 🙏
 
         st.caption(_get_encouragement(progress))
 
-        st.markdown("**Rate this response**")
-        r1, r2, r3 = st.columns(3)
-        with r1:
-            good_style = "primary" if current_rating == "good" else "secondary"
-            if st.button("👍 Good", key="btn_good", type=good_style, use_container_width=True):
-                _save_and_advance(row, "good", st.session_state.get("_eval_notes", ""), idx, samples)
-        with r2:
-            bad_style = "primary" if current_rating == "bad" else "secondary"
-            if st.button("👎 Bad", key="btn_bad", type=bad_style, use_container_width=True):
-                _save_and_advance(row, "bad", st.session_state.get("_eval_notes", ""), idx, samples)
-        with r3:
-            unclear_style = "primary" if current_rating == "unclear" else "secondary"
-            if st.button("🤔 Unclear", key="btn_unclear", type=unclear_style, use_container_width=True):
-                _save_and_advance(row, "unclear", st.session_state.get("_eval_notes", ""), idx, samples)
+        nav_c1, nav_c2 = st.columns(2)
+        with nav_c1:
+            if st.button("⬅️ Prev", disabled=(idx <= 0), width="stretch"):
+                st.session_state.human_eval_index = idx - 1
+                st.rerun()
+        with nav_c2:
+            if url:
+                st.link_button("🔗 View on GNW", url, width="stretch")
+            else:
+                st.button("⛓️‍💥 No link", disabled=True, width="stretch")
 
         notes = st.text_area(
             "📝 Notes (optional)",
-            value=existing.get("notes", ""),
             height=120,
             key="_eval_notes",
             placeholder="Add notes about the your rating...",
         )
 
-        nav_c1, nav_c2, nav_c3 = st.columns([1, 1, 2])
-        with nav_c1:
-            if st.button("⬅️ Prev", disabled=(idx <= 0), use_container_width=True):
-                st.session_state.human_eval_index = idx - 1
-                st.rerun()
-        with nav_c2:
-            if url:
-                st.link_button("🔗 GNW", url, use_container_width=True)
-            else:
-                st.button("🔗", disabled=True, use_container_width=True)
-        with nav_c3:
-            if st.button("Save & Continue ➡️", type="primary", use_container_width=True):
-                _save_and_advance(row, current_rating or "unclear", notes, idx, samples)
+        st.markdown("**Rate this response**")
+        r1, r2, r3 = st.columns(3)
+        with r1:
+            if st.button("👍 Good", key="btn_good", type="primary", width="stretch"):
+                _save_and_advance(row, "good", str(notes or ""), idx, samples)
+        with r2:
+            if st.button("👎 Bad", key="btn_bad", type="primary", width="stretch"):
+                _save_and_advance(row, "bad", str(notes or ""), idx, samples)
+        with r3:
+            if st.button("🤔 Unsure", key="btn_unsure", type="primary", width="stretch"):
+                _save_and_advance(row, "unclear", str(notes or ""), idx, samples)
 
         st.download_button(
             label="⬇️ Download CSV",
@@ -570,10 +574,10 @@ Thank you for your contribution! 🙏
             file_name=csv_filename,
             mime="text/csv",
             key="human_eval_evaluations_csv",
-            use_container_width=True,
+            width="stretch",
         )
 
-        if st.button("💾 Save & Finish", use_container_width=True):
+        if st.button("💾 Save & End session", width="stretch"):
             st.session_state.human_eval_completed = True
             st.download_button(
                 label="⬇️ Downloading...",
@@ -581,6 +585,7 @@ Thank you for your contribution! 🙏
                 file_name=csv_filename,
                 mime="text/csv",
                 key="human_eval_finish_csv",
+                width="stretch",
             )
             st.session_state.human_eval_samples = []
             st.session_state.human_eval_annotations = {}
@@ -590,16 +595,6 @@ Thank you for your contribution! 🙏
             st.session_state.human_eval_streak = 0
             st.session_state.human_eval_showed_balloons = False
             st.toast("Session saved! ✅")
-            st.rerun()
-
-        if st.button("🔄 Restart", use_container_width=True):
-            st.session_state.human_eval_samples = []
-            st.session_state.human_eval_annotations = {}
-            st.session_state.human_eval_index = 0
-            st.session_state.human_eval_started_at = None
-            st.session_state.human_eval_completed = False
-            st.session_state.human_eval_streak = 0
-            st.session_state.human_eval_showed_balloons = False
             st.rerun()
 
 
@@ -619,6 +614,9 @@ def _save_and_advance(row: dict, rating: str, notes: str, idx: int, samples: lis
     }
 
     st.session_state.human_eval_streak += 1
+
+    st.session_state.human_eval_clear_notes_next_run = True
+    st.session_state.human_eval_current_trace_id = ""
 
     if idx < len(samples) - 1:
         st.session_state.human_eval_index = idx + 1

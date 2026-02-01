@@ -328,10 +328,10 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
                 "user_first_seen.csv",
                 "text/csv",
                 key="analytics_user_first_seen_csv",
-                use_container_width=True,
+                width="stretch",
             )
         else:
-            st.button("⬇️ Download user data", disabled=True, use_container_width=True)
+            st.button("⬇️ Download user data", disabled=True, width="stretch")
 
     debug_df = st.session_state.get("analytics_user_first_seen_debug")
     if isinstance(debug_df, dict) and debug_df:
@@ -1202,7 +1202,7 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
             .head(20)
         )
         with st.expander("Top 20 tool transitions", expanded=False):
-            st.dataframe(flow_summary, hide_index=True, use_container_width=True)
+            st.dataframe(flow_summary, hide_index=True, width="stretch")
     else:
         st.info("No tool calls found in traces.")
 
@@ -1230,7 +1230,7 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
 
         chart = tool_success_rate_chart(tool_stats)
         if chart:
-            st.altair_chart(chart, use_container_width=True)
+            st.altair_chart(chart, width="stretch")
 
     # Reasoning tokens histogram
     if "reasoning_ratio" in df.columns:
@@ -1253,7 +1253,7 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
 
             chart = reasoning_tokens_histogram(reasoning_ratios)
             if chart:
-                st.altair_chart(chart, use_container_width=True)
+                st.altair_chart(chart, width="stretch")
 
     # Tool calls vs latency scatter
     if "tool_call_count" in df.columns and "latency_seconds" in df.columns:
@@ -1274,7 +1274,7 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
 
             chart = tool_calls_vs_latency_chart(plot_df)
             if chart:
-                st.altair_chart(chart, use_container_width=True)
+                st.altair_chart(chart, width="stretch")
 
     # Internal vs user-visible error rate (supplements outcome chart)
     if "has_internal_error" in df.columns and "outcome" in df.columns:
