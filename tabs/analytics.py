@@ -477,9 +477,9 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
     summary_rows.extend(
         [
             {"Section": "Outcomes", "Metric": "Success rate", "Value": f"{success_rate:.1%}", "Description": "% of traces that returned a valid answer"},
-            {"Section": "Outcomes", "Metric": "Defer rate", "Value": f"{defer_rate:.1%}", "Description": "% of traces where the system deferred (e.g. out of scope)"},
-            {"Section": "Outcomes", "Metric": "Soft error rate", "Value": f"{soft_error_rate:.1%}", "Description": "% of traces with partial/soft failures"},
-            {"Section": "Outcomes", "Metric": "Error rate", "Value": f"{error_rate:.1%}", "Description": "% of traces with hard errors or exceptions"},
+            {"Section": "Outcomes", "Metric": "Defer rate", "Value": f"{defer_rate:.1%}", "Description": "% of traces classified as DEFER (final answer is non-empty/non-error, but the trace shows no tool usage)"},
+            {"Section": "Outcomes", "Metric": "Soft error rate", "Value": f"{soft_error_rate:.1%}", "Description": "% of traces classified as SOFT_ERROR (final answer text looks like an error/apology via heuristic matching)"},
+            {"Section": "Outcomes", "Metric": "Error rate", "Value": f"{error_rate:.1%}", "Description": "% of traces classified as ERROR (empty final answer)"},
             {"Section": "Performance", "Metric": "Mean cost", "Value": f"${mean_cost:.4f}", "Description": "Average LLM cost per trace"},
             {"Section": "Performance", "Metric": "Median cost", "Value": f"${median_cost:.4f}", "Description": "Middle value of cost distribution (less sensitive to outliers)"},
             {"Section": "Performance", "Metric": "p95 cost", "Value": f"${p95_cost:.4f}", "Description": "95th percentile cost (only 5% of traces cost more)"},
@@ -505,14 +505,14 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
     report_csv_bytes = csv_bytes_any(report_rows)
 
     st.download_button(
-        label="Download report data `.csv`",
+        label="Download Report Data `.csv`",
         data=report_csv_bytes,
         file_name="stats_report_rows.csv",
         mime="text/csv",
         key="analytics_report_csv",
     )
 
-    with st.expander("Raw rows"):
+    with st.expander("Report Data"):
         st.dataframe(df, width="stretch")
 
     st.markdown("### Prompt utilisation", help="How intensively users are engaging with the system. Higher prompts/user/day suggests stickier product usage.")
@@ -665,7 +665,14 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
             st.markdown("#### Daily volume", help="Daily traces, unique users, and unique threads.")
             st.altair_chart(vol_chart, width="stretch")
         with row1_c2:
-            st.markdown("#### Daily outcomes", help="Daily mix of success/defer/errors as rates.")
+            st.markdown(
+                "#### Daily outcomes",
+                help=(
+                    "Daily mix of outcomes as rates. Outcome rules: ANSWER = non-empty answer + tool usage; "
+                    "DEFER = non-empty/non-error answer but no tool usage; SOFT_ERROR = answer text looks like an error via heuristics; "
+                    "ERROR = empty answer."
+                ),
+            )
             st.altair_chart(out_chart, width="stretch")
 
         row2_c1, row2_c2 = st.columns(2)
@@ -1016,7 +1023,14 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
 
     dist_c1, dist_c2 = st.columns(2)
     with dist_c1:
-        st.markdown("#### Outcome breakdown", help="Overall outcome mix across the selected period.")
+        st.markdown(
+            "#### Outcome breakdown",
+            help=(
+                "Overall outcome mix across the selected period. Outcome rules: ANSWER = non-empty answer + tool usage; "
+                "DEFER = non-empty/non-error answer but no tool usage; SOFT_ERROR = answer text looks like an error via heuristics; "
+                "ERROR = empty answer."
+            ),
+        )
         st.altair_chart(outcome_chart, width="stretch")
     with dist_c2:
         if lang_chart:
