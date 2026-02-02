@@ -468,7 +468,7 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
     if has_user_first_seen:
         summary_rows.extend(
             [
-                {"Section": "Volume", "Metric": "Total users (all time)", "Value": f"{user_first_seen_total_users:,}", "Description": "Distinct user IDs seen since 2025-09-17 in Langfuse"},
+                {"Section": "Volume", "Metric": "Total users (all time)", "Value": f"{user_first_seen_total_users:,}", "Description": "Distinct user IDs seen since launch (Spet 17th 2025) in Langfuse"},
                 {"Section": "Volume", "Metric": f"New users (since {start_date_label})", "Value": f"{user_first_seen_new_users:,}", "Description": f"Users whose first-ever trace was after {start_date_label}"},
                 {"Section": "Volume", "Metric": f"Returning users (since {start_date_label})", "Value": f"{user_first_seen_returning_users:,}", "Description": f"Users active within the selected range whose first-ever trace was before {start_date_label}"},
             ]

@@ -1,4 +1,5 @@
 import os
+import hmac
 from datetime import date, datetime, time, timedelta, timezone
 import inspect
 from typing import Any
@@ -32,7 +33,32 @@ def main() -> None:
 
     maybe_load_dotenv()
 
+    app_password = os.getenv("APP_PASSWORD", "")
+    if "app_authenticated" not in st.session_state:
+        st.session_state.app_authenticated = False
+
+    if app_password and not st.session_state.app_authenticated:
+        st.title("🔒 Tracey")
+        st.caption("Enter the app password to continue.")
+
+        pw = st.text_input("Password", type="password", key="_app_password_input", width=500)
+        col_login, _ = st.columns([1, 3])
+        with col_login:
+            if st.button("Log in", type="primary"):
+                if hmac.compare_digest(str(pw), str(app_password)):
+                    st.session_state.app_authenticated = True
+                    st.session_state.pop("_app_password_input", None)
+                    st.rerun()
+                else:
+                    st.error("Incorrect password")
+        return
+
     with st.sidebar:
+        if app_password:
+            if st.button("Log out", width="stretch"):
+                st.session_state.app_authenticated = False
+                st.rerun()
+
         ### title with small text to the right
         st.title("💬🧠📎 Tracey. `v0.1`")
         st.caption("Think: _Clippy_... but for GNW traces.")
