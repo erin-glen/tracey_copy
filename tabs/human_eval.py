@@ -99,7 +99,7 @@ def render(
     if not traces:
         st.info(
             "This tab helps you create a **random sample** from the currently loaded traces and record quick human eval "
-            "annotations (good/bad/unclear + notes).\n\n"
+            "annotations (pass/fail/unclear + notes).\n\n"
             "Use the sidebar **🚀 Fetch traces** button first, then click **Sample from fetched traces** here."
         )
         return
@@ -403,6 +403,8 @@ def render(
     for r in samples:
         tid = str(r.get("trace_id") or "")
         ann = st.session_state.human_eval_annotations.get(tid, {})
+        raw_rating = str(ann.get("rating") or "")
+        rating = {"good": "pass", "bad": "fail"}.get(raw_rating, raw_rating)
         status = "evaluated" if tid in evaluated_ids else "not_evaluated"
         eval_rows.append(
             {
@@ -411,7 +413,7 @@ def render(
                 "timestamp": str(r.get("timestamp") or ""),
                 "session_id": str(r.get("session_id") or ""),
                 "environment": str(r.get("environment") or ""),
-                "rating": str(ann.get("rating") or ""),
+                "rating": rating,
                 "notes": str(ann.get("notes") or ""),
                 "url": f"{base_thread_url.rstrip('/')}/{r.get('session_id')}" if r.get("session_id") else "",
                 "prompt": str(r.get("prompt") or ""),
@@ -553,19 +555,37 @@ Thank you for your contribution! 🙏
             "📝 Notes (optional)",
             height=120,
             key="_eval_notes",
-            placeholder="Add notes about the your rating...",
+            placeholder="Add notes to justify your rating...",
         )
 
         st.markdown("**Rate this response**")
         r1, r2, r3 = st.columns(3)
         with r1:
-            if st.button("👍 Good", key="btn_good", type="primary", width="stretch"):
-                _save_and_advance(row, "good", str(notes or ""), idx, samples)
+            if st.button(
+                "👍 Pass",
+                key="btn_pass",
+                type="primary",
+                width="stretch",
+                help="Use **Pass** when the response is correct, relevant, and would satisfy the user without major issues.",
+            ):
+                _save_and_advance(row, "pass", str(notes or ""), idx, samples)
         with r2:
-            if st.button("👎 Bad", key="btn_bad", type="primary", width="stretch"):
-                _save_and_advance(row, "bad", str(notes or ""), idx, samples)
+            if st.button(
+                "👎 Fail",
+                key="btn_fail",
+                type="primary",
+                width="stretch",
+                help="Use **Fail** when the response is wrong, missing key information, unsafe, or clearly not usable.",
+            ):
+                _save_and_advance(row, "fail", str(notes or ""), idx, samples)
         with r3:
-            if st.button("🤔 Unsure", key="btn_unsure", type="primary", width="stretch"):
+            if st.button(
+                "🤔 Unclear",
+                key="btn_unclear",
+                type="primary",
+                width="stretch",
+                help="Use **Unclear** when you can't confidently decide Pass/Fail (e.g. missing context, ambiguous question, needs domain verification).",
+            ):
                 _save_and_advance(row, "unclear", str(notes or ""), idx, samples)
 
         st.download_button(
