@@ -12,9 +12,12 @@ from utils import (
     get_langfuse_headers,
     fetch_score_configs,
     list_annotation_queues,
+    get_annotation_queue,
+    list_annotation_queue_items,
     create_annotation_queue,
     create_annotation_queue_item,
     update_annotation_queue_item,
+    fetch_trace,
     fetch_projects,
     create_score,
     delete_score,
@@ -27,10 +30,17 @@ from utils import (
     get_gemini_model_options,
     truncate_text,
     parse_json_any,
+    chunked,
 )
 
 
 ENCOURAGEMENT_MESSAGES = [
+    "Great start! ",
+    "You're on a roll! ",
+    "Keep it up! ",
+    "Halfway there! ",
+    "Almost done! ",
+    "Final stretch! ",
     "Great start! 🚀",
     "You're on a roll! 🔥",
     "Keep it up! 💪",
@@ -93,6 +103,7 @@ def render(
         "human_eval_filter_cache": {},
         "human_eval_queue_id": "",
         "human_eval_queue_name": "",
+        "human_eval_queue_description": "",
         "human_eval_score_config_id": "",
         "human_eval_score_config_name": "",
         "human_eval_score_config_description": "",
@@ -100,6 +111,7 @@ def render(
         "human_eval_active_score_config_id": "",
         "human_eval_active_score_config_name": "",
         "human_eval_active_score_config_description": "",
+        "human_eval_active_queue_description": "",
         "human_eval_queue_items": {},
         "human_eval_langfuse_scores": {},
         "human_eval_project_id": "",
@@ -141,10 +153,18 @@ def render(
     samples: list[dict[str, Any]] = st.session_state.human_eval_samples
 
     if not samples:
-        st.markdown("#### Set up your evaluation session")
+        try:
+            step1_container = st.container(border=True)
+            step2_container = st.container(border=True)
+            step3_container = st.container(border=True)
+        except TypeError:
+            step1_container = st.container()
+            step2_container = st.container()
+            step3_container = st.container()
 
-        if not (public_key and secret_key and base_url):
-            st.info("Add Langfuse credentials in the sidebar to enable queue-based scoring.")
+        has_langfuse = bool(public_key and secret_key and base_url)
+        if not has_langfuse:
+            st.info("Add Langfuse credentials in the sidebar to enable eval queues.")
             score_configs = []
             queues = []
         else:
@@ -157,443 +177,635 @@ def render(
             except Exception:
                 queues = []
 
-        score_cfg_options = {
-            str(c.get("id")): {
-                "name": str(c.get("name") or ""),
-                "description": str(c.get("description") or ""),
+        with step1_container:
+            st.subheader("1. Select score config")
+            score_cfg_options = {
+                str(c.get("id")): {
+                    "name": str(c.get("name") or ""),
+                    "description": str(c.get("description") or ""),
+                }
+                for c in score_configs
+                if isinstance(c, dict) and c.get("id") and c.get("name")
             }
-            for c in score_configs
-            if isinstance(c, dict) and c.get("id") and c.get("name")
-        }
-        score_cfg_ids = list(score_cfg_options.keys())
-        score_cfg_display = {k: v.get("name", k) for k, v in score_cfg_options.items()}
-
-        selected_cfg_id = st.selectbox(
-            "Langfuse score config",
-            options=score_cfg_ids,
-            format_func=lambda cid: score_cfg_display.get(cid, cid),
-            index=score_cfg_ids.index(st.session_state.human_eval_score_config_id)
-            if st.session_state.human_eval_score_config_id in score_cfg_ids
-            else 0,
-            disabled=not bool(score_cfg_ids),
-            key="human_eval_score_config_id",
-            help="Required. Select the Langfuse score config that defines the categorical values (pass/fail/unsure) and rubric.",
-        )
-
-        selected_cfg = score_cfg_options.get(str(selected_cfg_id), {})
-        st.session_state.human_eval_score_config_name = str(selected_cfg.get("name") or "")
-        st.session_state.human_eval_score_config_description = str(selected_cfg.get("description") or "")
-
-        queue_options: dict[str, str] = {
-            "": "Select a queue...",
-        }
-        for q in queues:
-            if not isinstance(q, dict):
-                continue
-            qid = str(q.get("id") or "").strip()
-            qname = str(q.get("name") or "").strip()
-            if qid and qname:
-                queue_options[qid] = qname
-
-        create_new = st.checkbox(
-            "Create a new annotation queue",
-            value=False,
-            key="human_eval_create_new_queue",
-            help="If checked, create a new queue in Langfuse tied to the selected score config.",
-        )
-        if create_new:
-            new_name = st.text_input(
-                "New queue name",
-                value=str(st.session_state.get("human_eval_new_queue_name") or ""),
-                key="human_eval_new_queue_name",
-                help="Required. A short name to identify this queue in Langfuse.",
+            score_cfg_ids = list(score_cfg_options.keys())
+            score_cfg_display = {k: v.get("name", k) for k, v in score_cfg_options.items()}
+            selected_cfg_id = st.selectbox(
+                "Score config",
+                options=score_cfg_ids,
+                format_func=lambda cid: score_cfg_display.get(cid, cid),
+                index=score_cfg_ids.index(st.session_state.human_eval_score_config_id)
+                if st.session_state.human_eval_score_config_id in score_cfg_ids
+                else 0,
+                disabled=not bool(score_cfg_ids),
+                key="human_eval_score_config_id",
+                help="Defines the categorical labels (pass/fail/unsure).",
             )
-            new_desc = st.text_area(
-                "New queue description (optional)",
-                value=str(st.session_state.get("human_eval_new_queue_desc") or ""),
-                key="human_eval_new_queue_desc",
-                height=80,
-                help="Optional. Use this to describe what evaluators should do.",
+            selected_cfg = score_cfg_options.get(str(selected_cfg_id), {})
+            st.session_state.human_eval_score_config_name = str(selected_cfg.get("name") or "")
+            st.session_state.human_eval_score_config_description = str(selected_cfg.get("description") or "")
+
+            cfg_desc = str(st.session_state.human_eval_score_config_description or "").strip()
+            if cfg_desc:
+                with st.expander("Scoring Definition", expanded=False):
+                    st.markdown(cfg_desc)
+
+        with step2_container:
+            st.subheader("2. Select or create an Eval queue")
+            queue_options: dict[str, str] = {"": "Select an eval queue..."}
+            for q in queues:
+                if not isinstance(q, dict):
+                    continue
+                qid = str(q.get("id") or "").strip()
+                qname = str(q.get("name") or "").strip()
+                if qid and qname:
+                    queue_options[qid] = qname
+
+            create_new = st.checkbox(
+                "Create new eval queue",
+                value=False,
+                key="human_eval_create_new_queue",
+                help="Create a new Langfuse annotation queue.",
             )
-            if st.button(
-                "Create queue",
-                type="secondary",
-                disabled=not bool(new_name.strip() and selected_cfg_id),
-                help="Creates the queue in Langfuse and selects it for this session.",
-            ):
+            if create_new:
+                queue_name_placeholder = "GNW_Eval__<rubric-shortname>__<topic>__<date>__v<version>"
+                rubric_placeholder = (
+                    "Rubric best practices:\n"
+                    "- Define what Pass/Fail/Unsure mean\n"
+                    "- Provide 2-3 examples\n"
+                    "- Call out common failure modes\n"
+                    "- Keep it short but unambiguous\n"
+                )
+                new_name = st.text_input(
+                    "Eval queue name",
+                    value=str(st.session_state.get("human_eval_new_queue_name") or ""),
+                    key="human_eval_new_queue_name",
+                    placeholder=queue_name_placeholder,
+                    help="Required. Use a consistent naming convention.",
+                )
+                new_desc = st.text_area(
+                    "Rubric / description",
+                    value=str(st.session_state.get("human_eval_new_queue_desc") or ""),
+                    key="human_eval_new_queue_desc",
+                    height=140,
+                    placeholder=rubric_placeholder,
+                    help="Required. This becomes the queue description in Langfuse.",
+                )
+                if st.button(
+                    "Create eval queue",
+                    type="secondary",
+                    disabled=not bool(has_langfuse and new_name.strip() and new_desc.strip() and selected_cfg_id),
+                ):
+                    try:
+                        q = create_annotation_queue(
+                            base_url=base_url,
+                            headers=headers,
+                            name=new_name.strip(),
+                            description=new_desc.strip(),
+                            score_config_ids=[str(selected_cfg_id)],
+                        )
+                        qid = str(q.get("id") or "").strip()
+                        if qid:
+                            st.session_state.human_eval_queue_id = qid
+                            st.session_state.human_eval_queue_name = str(q.get("name") or "")
+                            st.session_state.human_eval_queue_description = str(q.get("description") or "")
+                            st.success("Eval queue created.")
+                            st.rerun()
+                    except Exception as e:
+                        st.warning(f"Failed to create queue: {e}")
+            else:
+                existing_ids = list(queue_options.keys())
+                selected_queue_id = st.selectbox(
+                    "Eval queue",
+                    options=existing_ids,
+                    format_func=lambda qid: queue_options.get(qid, qid),
+                    index=existing_ids.index(st.session_state.human_eval_queue_id)
+                    if st.session_state.human_eval_queue_id in existing_ids
+                    else 0,
+                    key="human_eval_queue_id",
+                    help="Pick an existing Langfuse annotation queue.",
+                )
+                st.session_state.human_eval_queue_name = queue_options.get(str(selected_queue_id), "")
+
+            if has_langfuse and str(st.session_state.get("human_eval_queue_id") or "").strip():
                 try:
-                    q = create_annotation_queue(
+                    qd = get_annotation_queue(
                         base_url=base_url,
                         headers=headers,
-                        name=new_name.strip(),
-                        description=new_desc.strip() if new_desc.strip() else None,
-                        score_config_ids=[str(selected_cfg_id)],
+                        queue_id=str(st.session_state.human_eval_queue_id),
                     )
-                    qid = str(q.get("id") or "").strip()
-                    if qid:
-                        st.session_state.human_eval_queue_id = qid
-                        st.session_state.human_eval_queue_name = str(q.get("name") or "")
-                        st.success("Queue created.")
-                        st.rerun()
-                except Exception as e:
-                    st.warning(f"Failed to create queue: {e}")
-        else:
-            existing_ids = list(queue_options.keys())
-            selected_queue_id = st.selectbox(
-                "Langfuse annotation queue",
-                options=existing_ids,
-                format_func=lambda qid: queue_options.get(qid, qid),
-                index=existing_ids.index(st.session_state.human_eval_queue_id)
-                if st.session_state.human_eval_queue_id in existing_ids
-                else 0,
-                key="human_eval_queue_id",
-                help="Required. Choose the queue where sampled traces will be added for annotation.",
-            )
-            st.session_state.human_eval_queue_name = queue_options.get(str(selected_queue_id), "")
+                    st.session_state.human_eval_queue_description = str(qd.get("description") or "")
+                    if not str(st.session_state.get("human_eval_queue_name") or "").strip():
+                        st.session_state.human_eval_queue_name = str(qd.get("name") or "")
+                except Exception:
+                    pass
 
-        if public_key and secret_key and base_url:
-            try:
-                projects = fetch_projects(base_url=base_url, headers=headers)
-                if isinstance(projects, list) and projects:
-                    pid = str(projects[0].get("id") or "").strip() if isinstance(projects[0], dict) else ""
-                    if pid:
-                        st.session_state.human_eval_project_id = pid
-            except Exception:
-                pass
+            queue_id_for_preview = str(st.session_state.get("human_eval_queue_id") or "").strip()
+            if has_langfuse and queue_id_for_preview:
+                queue_desc = str(st.session_state.get("human_eval_queue_description") or "").strip()
+                with st.expander("Rubric (_What you're scoring against_)", expanded=False):
+                    if queue_desc:
+                        st.markdown(queue_desc)
+                    try:
+                        preview_items = list_annotation_queue_items(
+                            base_url=base_url,
+                            headers=headers,
+                            queue_id=queue_id_for_preview,
+                            status=None,
+                            page=1,
+                            limit=50,
+                        )
+                    except Exception:
+                        preview_items = []
 
-            if st.session_state.human_eval_queue_id and st.session_state.human_eval_project_id:
-                queue_url = f"{base_url.rstrip('/')}/project/{st.session_state.human_eval_project_id}/annotation-queues/{st.session_state.human_eval_queue_id}"
-                st.link_button("Open queue in Langfuse", queue_url)
+                    trace_by_id: dict[str, dict[str, Any]] = {}
+                    for t in traces:
+                        try:
+                            n = normalize_trace_format(t)
+                            tid = str(n.get("id") or "").strip()
+                            if tid:
+                                trace_by_id[tid] = n
+                        except Exception:
+                            continue
 
-        evaluator_name = st.text_input(
-            "Your name (for CSV filename)",
-            value=st.session_state.human_eval_evaluator_name,
-            placeholder="e.g. Alice",
-            key="_eval_name_input",
-            help="Used in exported CSV filename and appended to Langfuse score comments (e.g. '-Alice').",
-        )
-        col_size, col_seed = st.columns(2)
-        with col_size:
-            sample_size = st.number_input("Sample size", min_value=1, max_value=200, value=10)
-        with col_seed:
-            random_seed = st.number_input("Random seed", min_value=0, max_value=10_000_000, value=0)
+                    rows: list[dict[str, Any]] = []
+                    for it in preview_items:
+                        if not isinstance(it, dict):
+                            continue
+                        if str(it.get("objectType") or "").upper() != "TRACE":
+                            continue
+                        tid = str(it.get("objectId") or "").strip()
+                        status = str(it.get("status") or "").strip()
+                        n = trace_by_id.get(tid)
+                        prompt = truncate_text(first_human_prompt(n) if n else "", 220)
+                        answer = truncate_text(final_ai_message(n) if n else "", 220)
+                        rows.append({"status": status, "prompt": prompt, "answer": answer})
 
-        with st.expander(
-            "🔎 Optional: Gemini pre-filter (SME topic/dataset)",
-            expanded=bool(str(st.session_state.get("human_eval_filter_criteria", "") or "").strip()),
-        ):
-            criteria = st.text_area(
-                "Filter criteria",
-                value=str(st.session_state.get("human_eval_filter_criteria", "") or ""),
-                height=90,
-                key="human_eval_filter_criteria",
-                placeholder="e.g. Only prompts about tree cover loss drivers, wildfire, or Indonesia.",
-            )
+                    completed_items = len(
+                        [it for it in preview_items if str(it.get("status") or "").strip() == "COMPLETED"]
+                    )
 
-            gemini_model_options = get_gemini_model_options(gemini_api_key) if gemini_api_key else []
-            default_model = "gemini-2.5-flash-lite"
-            if gemini_model_options and default_model not in gemini_model_options:
-                default_model = gemini_model_options[0]
-
-            model_name = st.selectbox(
-                "Gemini model",
-                options=gemini_model_options if gemini_model_options else [default_model],
-                index=(
-                    gemini_model_options.index(default_model)
-                    if gemini_model_options and default_model in gemini_model_options
-                    else 0
-                ),
-                key="human_eval_filter_model",
-                disabled=not bool(gemini_api_key),
-            )
-
-            max_to_classify = st.number_input(
-                "Max traces to classify",
-                min_value=10,
-                max_value=5000,
-                value=500,
-                help="Classification can be expensive; start small and increase as needed.",
-                key="human_eval_filter_max_to_classify",
-            )
-
-            st.caption(
-                "Sampling will automatically use this filter when criteria is set and matching traces have been classified."
-            )
-
-            if not gemini_api_key:
-                st.warning("No Gemini API key configured. Set GEMINI_API_KEY or GOOGLE_API_KEY.")
-
-            if st.button("Run Gemini filter", type="secondary", disabled=not bool(gemini_api_key)):
-                if not criteria.strip():
-                    st.warning("Enter filter criteria first.")
-                else:
-                    cache: dict[str, Any] = st.session_state.get("human_eval_filter_cache", {})
-                    if not isinstance(cache, dict):
-                        cache = {}
-
-                    key = _criteria_key(str(model_name or ""), str(criteria or ""))
-                    progress = st.progress(0.0, text="Classifying prompts...")
-
-                    scanned = 0
-                    updated = 0
-                    to_consider = traces[: int(max_to_classify)]
-                    batch_size = 20
-                    pending: list[dict[str, Any]] = []
-
-                    def _flush_pending() -> None:
-                        nonlocal scanned, updated, pending
-                        if not pending:
-                            return
-
-                        items = [
-                            {"trace_id": p["trace_id"], "prompt": p["prompt"]}
-                            for p in pending
-                            if p.get("trace_id") and p.get("prompt")
-                        ]
-                        if not items:
-                            pending = []
-                            return
-
-                        llm_prompt = (
-                            "You are a strict classifier for routing user prompts to domain experts.\n"
-                            "Given the criteria and each user prompt, decide if the prompt matches the criteria.\n\n"
-                            "Return ONLY valid JSON as an array of objects. Each object MUST have keys: "
-                            "trace_id (string), match (boolean), reason (string).\n\n"
-                            f"CRITERIA:\n{criteria.strip()}\n\n"
-                            "ITEMS (JSON):\n"
-                            f"{json.dumps(items, ensure_ascii=False)}\n"
+                with st.expander(
+                    f"Queue items ({len(preview_items)})",
+                    expanded=False,
+                ):
+                    if rows:
+                        st.dataframe(rows, hide_index=True, width="stretch")
+                    else:
+                        st.caption(
+                            "No items to preview (or prompts/answers not available in currently fetched traces)."
                         )
 
-                        resp_txt = _call_gemini(gemini_api_key, str(model_name), llm_prompt)
-                        parsed_any = parse_json_any(resp_txt)
-                        if not isinstance(parsed_any, list):
-                            parsed_any = []
+            if has_langfuse:
+                try:
+                    projects = fetch_projects(base_url=base_url, headers=headers)
+                    if isinstance(projects, list) and projects:
+                        pid = str(projects[0].get("id") or "").strip() if isinstance(projects[0], dict) else ""
+                        if pid:
+                            st.session_state.human_eval_project_id = pid
+                except Exception:
+                    pass
+                if st.session_state.human_eval_queue_id and st.session_state.human_eval_project_id:
+                    queue_url = f"{base_url.rstrip('/')}/project/{st.session_state.human_eval_project_id}/annotation-queues/{st.session_state.human_eval_queue_id}"
+                    st.link_button("🔗 Open in Langfuse", queue_url)
 
-                        by_tid: dict[str, dict[str, Any]] = {}
-                        for row in parsed_any:
-                            if not isinstance(row, dict):
-                                continue
-                            tid = str(row.get("trace_id") or "").strip()
+        with step3_container:
+            st.subheader("3. Start Evaluating!")
+            evaluator_name = st.text_input(
+                "Reviewer name",
+                value=st.session_state.human_eval_evaluator_name,
+                placeholder="e.g. Alice",
+                key="_eval_name_input",
+                help="Used in CSV filename and appended to Langfuse score comments.",
+            )
+            if evaluator_name.strip():
+                st.session_state.human_eval_evaluator_name = evaluator_name.strip()
+
+            cfg_ok = bool(str(st.session_state.get("human_eval_score_config_id") or "").strip())
+            queue_ok = bool(str(st.session_state.get("human_eval_queue_id") or "").strip())
+            ready = bool(has_langfuse and cfg_ok and queue_ok)
+
+            pending_count = 0
+            if ready:
+                try:
+                    pending_items = list_annotation_queue_items(
+                        base_url=base_url,
+                        headers=headers,
+                        queue_id=str(st.session_state.human_eval_queue_id),
+                        status="PENDING",
+                        page=1,
+                        limit=100,
+                    )
+                    pending_count = len(pending_items)
+                except Exception:
+                    pending_items = []
+            else:
+                pending_items = []
+
+            action_c1, action_c2 = st.columns(2)
+            with action_c1:
+                if st.button(
+                    f"▶️ Evaluate pending items ({pending_count})",
+                    type="primary",
+                    disabled=not bool(ready and pending_count > 0),
+                    help="Loads pending queue items from Langfuse and starts the evaluation session.",
+                ):
+                    queue_id = str(st.session_state.human_eval_queue_id)
+                    st.session_state.human_eval_active_queue_id = queue_id
+                    st.session_state.human_eval_active_score_config_id = str(st.session_state.human_eval_score_config_id)
+                    st.session_state.human_eval_active_score_config_name = str(st.session_state.human_eval_score_config_name)
+                    st.session_state.human_eval_active_score_config_description = str(
+                        st.session_state.human_eval_score_config_description
+                    )
+                    st.session_state.human_eval_active_queue_description = str(
+                        st.session_state.human_eval_queue_description
+                    )
+
+                    trace_ids = [
+                        str(it.get("objectId") or "").strip()
+                        for it in pending_items
+                        if isinstance(it, dict) and str(it.get("objectType") or "").upper() == "TRACE"
+                    ]
+                    item_map = {
+                        str(it.get("objectId") or "").strip(): str(it.get("id") or "").strip()
+                        for it in pending_items
+                        if isinstance(it, dict) and it.get("objectId") and it.get("id")
+                    }
+
+                    trace_by_id: dict[str, dict[str, Any]] = {}
+                    for t in traces:
+                        try:
+                            n = normalize_trace_format(t)
+                            tid = str(n.get("id") or "").strip()
+                            if tid:
+                                trace_by_id[tid] = n
+                        except Exception:
+                            continue
+
+                    loaded: list[dict[str, Any]] = []
+                    prog = st.progress(0.0, text="Preparing pending traces...")
+                    for i, tid in enumerate(trace_ids):
+                        n = trace_by_id.get(tid)
+                        if n is None:
+                            try:
+                                tr = fetch_trace(base_url=base_url, headers=headers, trace_id=tid)
+                                n = normalize_trace_format(tr)
+                            except Exception:
+                                n = None
+                        if n is not None:
+                            prompt = first_human_prompt(n)
+                            answer = final_ai_message(n)
+                            if prompt and answer:
+                                helper_info = extract_trace_context(n)
+                                loaded.append(
+                                    {
+                                        "trace_id": n.get("id"),
+                                        "timestamp": n.get("timestamp"),
+                                        "session_id": n.get("sessionId"),
+                                        "environment": n.get("environment"),
+                                        "prompt": prompt,
+                                        "answer": answer,
+                                        "aois": helper_info.get("aois", []),
+                                        "datasets": helper_info.get("datasets", []),
+                                        "datasets_analysed": helper_info.get("datasets_analysed", []),
+                                        "tools_used": helper_info.get("tools_used", []),
+                                        "aoi_name": helper_info.get("aoi_name", ""),
+                                        "aoi_type": helper_info.get("aoi_type", ""),
+                                        "filter_match": False,
+                                    }
+                                )
+                        prog.progress((i + 1) / max(1, len(trace_ids)))
+                    prog.empty()
+
+                    st.session_state.human_eval_samples = loaded
+                    st.session_state.human_eval_queue_items = item_map
+                    st.session_state.human_eval_index = 0
+                    st.session_state.human_eval_annotations = {}
+                    st.session_state.human_eval_started_at = time.time()
+                    st.session_state.human_eval_completed = False
+                    st.session_state.human_eval_streak = 0
+                    st.session_state.human_eval_showed_balloons = False
+                    st.rerun()
+
+            with action_c2:
+                st.caption("Or sample traces and add them to the eval queue.")
+
+            col_size, col_seed = st.columns(2)
+            with col_size:
+                sample_size = st.number_input("Sample size", min_value=1, max_value=200, value=10)
+            with col_seed:
+                random_seed = st.number_input("Random seed", min_value=0, max_value=10_000_000, value=0)
+
+            with st.expander(
+                "🔎 Optional: Gemini pre-filter (SME topic/dataset)",
+                expanded=bool(str(st.session_state.get("human_eval_filter_criteria", "") or "").strip()),
+            ):
+                criteria = st.text_area(
+                    "Filter criteria",
+                    value=str(st.session_state.get("human_eval_filter_criteria", "") or ""),
+                    height=90,
+                    key="human_eval_filter_criteria",
+                    placeholder="e.g. Only prompts about tree cover loss drivers, wildfire, or Indonesia.",
+                )
+
+                gemini_model_options = get_gemini_model_options(gemini_api_key) if gemini_api_key else []
+                default_model = "gemini-2.5-flash-lite"
+                if gemini_model_options and default_model not in gemini_model_options:
+                    default_model = gemini_model_options[0]
+
+                model_name = st.selectbox(
+                    "Gemini model",
+                    options=gemini_model_options if gemini_model_options else [default_model],
+                    index=(
+                        gemini_model_options.index(default_model)
+                        if gemini_model_options and default_model in gemini_model_options
+                        else 0
+                    ),
+                    key="human_eval_filter_model",
+                    disabled=not bool(gemini_api_key),
+                )
+
+                max_to_classify = st.number_input(
+                    "Max traces to classify",
+                    min_value=10,
+                    max_value=5000,
+                    value=500,
+                    help="Classification can be expensive; start small and increase as needed.",
+                    key="human_eval_filter_max_to_classify",
+                )
+
+                st.caption(
+                    "Sampling will automatically use this filter when criteria is set and matching traces have been classified."
+                )
+
+                if not gemini_api_key:
+                    st.warning("No Gemini API key configured. Set GEMINI_API_KEY or GOOGLE_API_KEY.")
+
+                if st.button("Run Gemini filter", type="secondary", disabled=not bool(gemini_api_key)):
+                    if not criteria.strip():
+                        st.warning("Enter filter criteria first.")
+                    else:
+                        cache: dict[str, Any] = st.session_state.get("human_eval_filter_cache", {})
+                        if not isinstance(cache, dict):
+                            cache = {}
+
+                        key = _criteria_key(str(model_name or ""), str(criteria or ""))
+                        progress = st.progress(0.0, text="Classifying prompts...")
+
+                        scanned = 0
+                        updated = 0
+                        to_consider = traces[: int(max_to_classify)]
+                        batch_size = 20
+                        pending: list[dict[str, Any]] = []
+
+                        def _flush_pending() -> None:
+                            nonlocal scanned, updated, pending
+                            if not pending:
+                                return
+
+                            items = [
+                                {"trace_id": p["trace_id"], "prompt": p["prompt"]}
+                                for p in pending
+                                if p.get("trace_id") and p.get("prompt")
+                            ]
+                            if not items:
+                                pending = []
+                                return
+
+                            llm_prompt = (
+                                "You are a strict classifier for routing user prompts to domain experts.\n"
+                                "Given the criteria and each user prompt, decide if the prompt matches the criteria.\n\n"
+                                "Return ONLY valid JSON as an array of objects. Each object MUST have keys: "
+                                "trace_id (string), match (boolean), reason (string).\n\n"
+                                f"CRITERIA:\n{criteria.strip()}\n\n"
+                                "ITEMS (JSON):\n"
+                                f"{json.dumps(items, ensure_ascii=False)}\n"
+                            )
+
+                            resp_txt = _call_gemini(gemini_api_key, str(model_name), llm_prompt)
+                            parsed_any = parse_json_any(resp_txt)
+                            if not isinstance(parsed_any, list):
+                                parsed_any = []
+
+                            by_tid: dict[str, dict[str, Any]] = {}
+                            for row in parsed_any:
+                                if not isinstance(row, dict):
+                                    continue
+                                tid = str(row.get("trace_id") or "").strip()
+                                if not tid:
+                                    continue
+                                by_tid[tid] = row
+
+                            for p in pending:
+                                tid = str(p.get("trace_id") or "")
+                                out = by_tid.get(tid)
+                                if isinstance(out, dict):
+                                    cache[tid] = {
+                                        "criteria_key": key,
+                                        "match": bool(out.get("match")),
+                                        "reason": str(out.get("reason") or ""),
+                                    }
+                                else:
+                                    cache[tid] = {
+                                        "criteria_key": key,
+                                        "match": False,
+                                        "reason": "parse_error",
+                                    }
+                                updated += 1
+
+                            pending = []
+
+                        for t in to_consider:
+                            n = normalize_trace_format(t)
+                            tid = str(n.get("id") or "")
                             if not tid:
                                 continue
-                            by_tid[tid] = row
 
-                        for p in pending:
-                            tid = str(p.get("trace_id") or "")
-                            out = by_tid.get(tid)
-                            if isinstance(out, dict):
-                                cache[tid] = {
-                                    "criteria_key": key,
-                                    "match": bool(out.get("match")),
-                                    "reason": str(out.get("reason") or ""),
-                                }
-                            else:
+                            existing = cache.get(tid)
+                            if isinstance(existing, dict) and existing.get("criteria_key") == key:
+                                scanned += 1
+                                if scanned % 25 == 0:
+                                    progress.progress(min(1.0, scanned / max(1, int(max_to_classify))))
+                                continue
+
+                            prompt_txt = first_human_prompt(n)
+                            if not prompt_txt.strip():
                                 cache[tid] = {
                                     "criteria_key": key,
                                     "match": False,
-                                    "reason": "parse_error",
+                                    "reason": "empty_prompt",
                                 }
-                            updated += 1
+                                scanned += 1
+                                updated += 1
+                            else:
+                                pending.append(
+                                    {
+                                        "trace_id": tid,
+                                        "prompt": truncate_text(prompt_txt, 1800),
+                                    }
+                                )
+                                scanned += 1
 
-                        pending = []
+                            if len(pending) >= batch_size:
+                                _flush_pending()
 
-                    for t in to_consider:
+                            if scanned % 10 == 0:
+                                progress.progress(min(1.0, scanned / max(1, int(max_to_classify))))
+
+                        _flush_pending()
+
+                        st.session_state.human_eval_filter_cache = cache
+                        st.success(f"Classified {updated:,} prompts (scanned {scanned:,}).")
+                        progress.empty()
+
+                cache = st.session_state.get("human_eval_filter_cache", {})
+                key = _criteria_key(str(st.session_state.get("human_eval_filter_model") or ""), str(criteria or ""))
+                evaluated = 0
+                matches = 0
+                matched_rows: list[dict[str, Any]] = []
+                if isinstance(cache, dict) and key and criteria.strip():
+                    for t in traces:
                         n = normalize_trace_format(t)
                         tid = str(n.get("id") or "")
                         if not tid:
                             continue
+                        entry = cache.get(tid)
+                        if isinstance(entry, dict) and entry.get("criteria_key") == key:
+                            evaluated += 1
+                            if entry.get("match") is True:
+                                matches += 1
+                                prompt_txt = first_human_prompt(n)
+                                matched_rows.append(
+                                    {
+                                        "trace_id": tid,
+                                        "session_id": str(n.get("sessionId") or ""),
+                                        "prompt": truncate_text(str(prompt_txt or ""), 220),
+                                        "reason": truncate_text(str(entry.get("reason") or ""), 220),
+                                    }
+                                )
 
-                        existing = cache.get(tid)
-                        if isinstance(existing, dict) and existing.get("criteria_key") == key:
-                            scanned += 1
-                            if scanned % 25 == 0:
-                                progress.progress(min(1.0, scanned / max(1, int(max_to_classify))))
-                            continue
+                    st.caption(
+                        f"Gemini filter coverage: {evaluated:,}/{len(traces):,} classified. Matches: {matches:,}."
+                    )
 
-                        prompt_txt = first_human_prompt(n)
-                        if not prompt_txt.strip():
-                            cache[tid] = {
-                                "criteria_key": key,
-                                "match": False,
-                                "reason": "empty_prompt",
-                            }
-                            scanned += 1
-                            updated += 1
-                        else:
-                            pending.append(
-                                {
-                                    "trace_id": tid,
-                                    "prompt": truncate_text(prompt_txt, 1800),
-                                }
-                            )
-                            scanned += 1
+                    preview_df = matched_rows[:5]
+                    if preview_df:
+                        st.dataframe(preview_df, hide_index=True, width="stretch")
+                    else:
+                        st.info("No matched examples to preview yet.")
 
-                        if len(pending) >= batch_size:
-                            _flush_pending()
+            if not ready:
+                st.warning("Complete steps 1-2 to enable sampling.")
 
-                        if scanned % 10 == 0:
-                            progress.progress(min(1.0, scanned / max(1, int(max_to_classify))))
+            if st.button("🎲 Sample traces and add to queue", type="primary", disabled=not ready):
+                normed: list[dict[str, Any]] = []
 
-                    _flush_pending()
+                criteria = str(st.session_state.get("human_eval_filter_criteria", "") or "")
+                model_name = str(st.session_state.get("human_eval_filter_model", "") or "")
+                filter_active = bool(criteria.strip())
+                criteria_key = _criteria_key(model_name, criteria) if filter_active else ""
+                cache = st.session_state.get("human_eval_filter_cache", {})
 
-                    st.session_state.human_eval_filter_cache = cache
-                    st.success(f"Classified {updated:,} prompts (scanned {scanned:,}).")
-                    progress.empty()
+                if filter_active:
+                    if not isinstance(cache, dict) or not any(
+                        isinstance(v, dict)
+                        and v.get("criteria_key") == criteria_key
+                        and v.get("match") is True
+                        for v in cache.values()
+                    ):
+                        st.warning(
+                            "Filter criteria is set, but there are no matching classified traces yet. "
+                            "Run the Gemini filter (or increase 'Max traces to classify') before sampling."
+                        )
+                        return
 
-            cache = st.session_state.get("human_eval_filter_cache", {})
-            key = _criteria_key(str(st.session_state.get("human_eval_filter_model") or ""), str(criteria or ""))
-            evaluated = 0
-            matches = 0
-            matched_rows: list[dict[str, Any]] = []
-            if isinstance(cache, dict) and key and criteria.strip():
                 for t in traces:
                     n = normalize_trace_format(t)
-                    tid = str(n.get("id") or "")
-                    if not tid:
+                    prompt = first_human_prompt(n)
+                    answer = final_ai_message(n)
+                    if not prompt or not answer:
                         continue
-                    entry = cache.get(tid)
-                    if isinstance(entry, dict) and entry.get("criteria_key") == key:
-                        evaluated += 1
-                        if entry.get("match") is True:
-                            matches += 1
-                            prompt_txt = first_human_prompt(n)
-                            matched_rows.append(
-                                {
-                                    "trace_id": tid,
-                                    "session_id": str(n.get("sessionId") or ""),
-                                    "prompt": truncate_text(str(prompt_txt or ""), 220),
-                                    "reason": truncate_text(str(entry.get("reason") or ""), 220),
-                                }
-                            )
 
-                st.caption(
-                    f"Gemini filter coverage: {evaluated:,}/{len(traces):,} classified. Matches: {matches:,}."
-                )
+                    if filter_active and criteria.strip():
+                        tid = str(n.get("id") or "")
+                        entry = cache.get(tid) if isinstance(cache, dict) and tid else None
+                        if not (isinstance(entry, dict) and entry.get("criteria_key") == criteria_key and entry.get("match") is True):
+                            continue
 
-                preview_df = matched_rows[:5]
-                if preview_df:
-                    st.dataframe(preview_df, hide_index=True, width="stretch")
-                else:
-                    st.info("No matched examples to preview yet.")
-
-        langfuse_ready = bool(
-            (public_key and secret_key and base_url)
-            and str(st.session_state.get("human_eval_score_config_id") or "").strip()
-            and str(st.session_state.get("human_eval_queue_id") or "").strip()
-        )
-
-        if not langfuse_ready:
-            st.warning("Select a score config and annotation queue (or create one) to enable sampling.")
-
-        if st.button("🎲 Sample from fetched traces", type="primary", disabled=not langfuse_ready):
-            if evaluator_name.strip():
-                st.session_state.human_eval_evaluator_name = evaluator_name.strip()
-            normed: list[dict[str, Any]] = []
-
-            criteria = str(st.session_state.get("human_eval_filter_criteria", "") or "")
-            model_name = str(st.session_state.get("human_eval_filter_model", "") or "")
-            filter_active = bool(criteria.strip())
-            criteria_key = _criteria_key(model_name, criteria) if filter_active else ""
-            cache = st.session_state.get("human_eval_filter_cache", {})
-
-            if filter_active:
-                if not isinstance(cache, dict) or not any(
-                    isinstance(v, dict)
-                    and v.get("criteria_key") == criteria_key
-                    and v.get("match") is True
-                    for v in cache.values()
-                ):
-                    st.warning(
-                        "Filter criteria is set, but there are no matching classified traces yet. "
-                        "Run the Gemini filter (or increase 'Max traces to classify') before sampling."
+                    helper_info = extract_trace_context(n)
+                    normed.append(
+                        {
+                            "trace_id": n.get("id"),
+                            "timestamp": n.get("timestamp"),
+                            "session_id": n.get("sessionId"),
+                            "environment": n.get("environment"),
+                            "prompt": prompt,
+                            "answer": answer,
+                            "aois": helper_info.get("aois", []),
+                            "datasets": helper_info.get("datasets", []),
+                            "datasets_analysed": helper_info.get("datasets_analysed", []),
+                            "tools_used": helper_info.get("tools_used", []),
+                            "aoi_name": helper_info.get("aoi_name", ""),
+                            "aoi_type": helper_info.get("aoi_type", ""),
+                            "filter_match": True if filter_active and criteria.strip() else False,
+                        }
                     )
-                    return
 
-            for t in traces:
-                n = normalize_trace_format(t)
-                prompt = first_human_prompt(n)
-                answer = final_ai_message(n)
-                if not prompt or not answer:
-                    continue
+                rng = random.Random(int(random_seed))
+                rng.shuffle(normed)
+                st.session_state.human_eval_samples = normed[: int(sample_size)]
+                st.session_state.human_eval_index = 0
+                st.session_state.human_eval_annotations = {}
+                st.session_state.human_eval_started_at = time.time()
+                st.session_state.human_eval_completed = False
+                st.session_state.human_eval_streak = 0
+                st.session_state.human_eval_showed_balloons = False
 
-                if filter_active and criteria.strip():
-                    tid = str(n.get("id") or "")
-                    entry = cache.get(tid) if isinstance(cache, dict) and tid else None
-                    if not (isinstance(entry, dict) and entry.get("criteria_key") == criteria_key and entry.get("match") is True):
-                        continue
+                st.session_state.human_eval_queue_items = {}
+                st.session_state.human_eval_langfuse_scores = {}
 
-                helper_info = extract_trace_context(n)
-                normed.append(
-                    {
-                        "trace_id": n.get("id"),
-                        "timestamp": n.get("timestamp"),
-                        "session_id": n.get("sessionId"),
-                        "environment": n.get("environment"),
-                        "prompt": prompt,
-                        "answer": answer,
-                        "aois": helper_info.get("aois", []),
-                        "datasets": helper_info.get("datasets", []),
-                        "datasets_analysed": helper_info.get("datasets_analysed", []),
-                        "tools_used": helper_info.get("tools_used", []),
-                        "aoi_name": helper_info.get("aoi_name", ""),
-                        "aoi_type": helper_info.get("aoi_type", ""),
-                        "filter_match": True if filter_active and criteria.strip() else False,
-                    }
-                )
+                queue_id = str(st.session_state.get("human_eval_queue_id") or "").strip()
+                if queue_id and public_key and secret_key and base_url:
+                    st.session_state.human_eval_active_queue_id = queue_id
+                    st.session_state.human_eval_active_score_config_id = str(
+                        st.session_state.get("human_eval_score_config_id") or ""
+                    ).strip()
+                    st.session_state.human_eval_active_score_config_name = str(
+                        st.session_state.get("human_eval_score_config_name") or ""
+                    ).strip()
+                    st.session_state.human_eval_active_score_config_description = str(
+                        st.session_state.get("human_eval_score_config_description") or ""
+                    ).strip()
+                    st.session_state.human_eval_active_queue_description = str(
+                        st.session_state.get("human_eval_queue_description") or ""
+                    ).strip()
 
-            rng = random.Random(int(random_seed))
-            rng.shuffle(normed)
-            st.session_state.human_eval_samples = normed[: int(sample_size)]
-            st.session_state.human_eval_index = 0
-            st.session_state.human_eval_annotations = {}
-            st.session_state.human_eval_started_at = time.time()
-            st.session_state.human_eval_completed = False
-            st.session_state.human_eval_streak = 0
-            st.session_state.human_eval_showed_balloons = False
+                    selected_samples = st.session_state.human_eval_samples
+                    trace_ids = [str(r.get("trace_id") or "").strip() for r in selected_samples if r.get("trace_id")]
+                    trace_ids = [t for t in trace_ids if t]
+                    if trace_ids:
+                        prog = st.progress(0.0, text="Adding sampled traces to annotation queue...")
+                        added: dict[str, str] = {}
+                        for i, tid in enumerate(trace_ids):
+                            try:
+                                item = create_annotation_queue_item(
+                                    base_url=base_url,
+                                    headers=headers,
+                                    queue_id=queue_id,
+                                    object_id=tid,
+                                    object_type="TRACE",
+                                )
+                                item_id = str(item.get("id") or "").strip()
+                                if item_id:
+                                    added[tid] = item_id
+                            except Exception:
+                                pass
+                            prog.progress((i + 1) / max(1, len(trace_ids)))
+                        prog.empty()
+                        st.session_state.human_eval_queue_items = added
+                st.rerun()
 
-            st.session_state.human_eval_queue_items = {}
-            st.session_state.human_eval_langfuse_scores = {}
-
-            queue_id = str(st.session_state.get("human_eval_queue_id") or "").strip()
-            if queue_id and public_key and secret_key and base_url:
-                st.session_state.human_eval_active_queue_id = queue_id
-                st.session_state.human_eval_active_score_config_id = str(
-                    st.session_state.get("human_eval_score_config_id") or ""
-                ).strip()
-                st.session_state.human_eval_active_score_config_name = str(
-                    st.session_state.get("human_eval_score_config_name") or ""
-                ).strip()
-                st.session_state.human_eval_active_score_config_description = str(
-                    st.session_state.get("human_eval_score_config_description") or ""
-                ).strip()
-
-                selected_samples = st.session_state.human_eval_samples
-                trace_ids = [str(r.get("trace_id") or "").strip() for r in selected_samples if r.get("trace_id")]
-                trace_ids = [t for t in trace_ids if t]
-                if trace_ids:
-                    prog = st.progress(0.0, text="Adding sampled traces to annotation queue...")
-                    added: dict[str, str] = {}
-                    for i, tid in enumerate(trace_ids):
-                        try:
-                            item = create_annotation_queue_item(
-                                base_url=base_url,
-                                headers=headers,
-                                queue_id=queue_id,
-                                object_id=tid,
-                                object_type="TRACE",
-                            )
-                            item_id = str(item.get("id") or "").strip()
-                            if item_id:
-                                added[tid] = item_id
-                        except Exception:
-                            pass
-                        prog.progress((i + 1) / max(1, len(trace_ids)))
-                    prog.empty()
-                    st.session_state.human_eval_queue_items = added
-            st.rerun()
-
-        st.info("Click the button above to create a shuffled sample from the shared traces.")
-        return
+            st.info("Click the button above to create a shuffled sample from the shared traces.")
+            return
 
     trace_ids = [str(r.get("trace_id") or "") for r in samples if r.get("trace_id")]
     evaluated_ids = {
@@ -611,19 +823,18 @@ def render(
         ann = st.session_state.human_eval_annotations.get(tid, {})
         raw_rating = str(ann.get("rating") or "")
         rating = {"good": "pass", "bad": "fail"}.get(raw_rating, raw_rating)
-        status = "evaluated" if tid in evaluated_ids else "not_evaluated"
+        status = "COMPLETE" if tid in evaluated_ids else "PENDING"
         eval_rows.append(
             {
                 "status": status,
                 "trace_id": tid,
-                "timestamp": str(r.get("timestamp") or ""),
-                "session_id": str(r.get("session_id") or ""),
-                "environment": str(r.get("environment") or ""),
-                "rating": rating,
-                "notes": str(ann.get("notes") or ""),
-                "url": f"{base_thread_url.rstrip('/')}/{r.get('session_id')}" if r.get("session_id") else "",
                 "prompt": str(r.get("prompt") or ""),
                 "answer": str(r.get("answer") or ""),
+                "session_id": str(r.get("session_id") or ""),
+                "rating": rating,
+                "notes": str(ann.get("notes") or ""),
+                "timestamp": str(r.get("timestamp") or ""),
+                "url": f"{base_thread_url.rstrip('/')}/{r.get('session_id')}" if r.get("session_id") else "",
             }
         )
 
@@ -647,27 +858,63 @@ def render(
 
         started_at = st.session_state.human_eval_started_at
         elapsed_s = (time.time() - float(started_at)) if started_at else 0.0
-        elapsed_m = int(elapsed_s // 60)
-        elapsed_r = int(elapsed_s % 60)
         avg_secs = elapsed_s / evaluated_count if evaluated_count else 0
 
         st.success("## 🎉 All done!")
-        st.markdown(
-            f"""
-**Congratulations!** You completed **{evaluated_count}** evaluations in **{elapsed_m}m {elapsed_r}s**.
 
-| Stat | Value |
-|------|-------|
-| ⏱️ Total time | {elapsed_m}m {elapsed_r}s |
-| 📊 Evaluations | {evaluated_count} |
-| ⚡ Avg per eval | {avg_secs:.1f}s |
+        active_queue_id = str(st.session_state.get("human_eval_active_queue_id") or st.session_state.get("human_eval_queue_id") or "").strip()
+        active_queue_name = str(st.session_state.get("human_eval_queue_name") or "").strip()
+        if active_queue_name or active_queue_id:
+            st.caption(f"Eval queue: {active_queue_name or active_queue_id}")
 
-Thank you for your contribution! 🙏
-"""
-        )
+        pass_n = sum(1 for r in eval_rows if r.get("status") == "evaluated" and r.get("rating") == "pass")
+        fail_n = sum(1 for r in eval_rows if r.get("status") == "evaluated" and r.get("rating") == "fail")
+        unsure_n = sum(1 for r in eval_rows if r.get("status") == "evaluated" and r.get("rating") == "unsure")
+
+        queue_pending = None
+        queue_completed = None
+        if active_queue_id and public_key and secret_key and base_url:
+            try:
+                pend = list_annotation_queue_items(
+                    base_url=base_url,
+                    headers=headers,
+                    queue_id=active_queue_id,
+                    status="PENDING",
+                    page=1,
+                    limit=100,
+                )
+                comp = list_annotation_queue_items(
+                    base_url=base_url,
+                    headers=headers,
+                    queue_id=active_queue_id,
+                    status="COMPLETED",
+                    page=1,
+                    limit=100,
+                )
+                queue_pending = len(pend)
+                queue_completed = len(comp)
+            except Exception:
+                pass
+
+        cols = st.columns(6)
+        with cols[0]:
+            st.metric("👍 Pass", pass_n)
+        with cols[1]:
+            st.metric("👎 Fail", fail_n)
+        with cols[2]:
+            st.metric("🤔 Unsure", unsure_n)
+        with cols[3]:
+            st.metric("⏱️ Avg (s)", f"{avg_secs:.1f}")
+        with cols[4]:
+            st.metric("⏳ Queue pending", "—" if queue_pending is None else str(queue_pending))
+        with cols[5]:
+            st.metric("✅ Queue completed", "—" if queue_completed is None else str(queue_completed))
+
+        st.markdown("## 📊 Evaluation results")
+        st.dataframe(eval_rows, hide_index=True, width="stretch")
 
         st.download_button(
-            label="⬇️ Download evaluation CSV",
+            label="⬇️ Download Evals (.csv)",
             data=eval_csv_bytes,
             file_name=csv_filename,
             mime="text/csv",
@@ -757,11 +1004,12 @@ Thank you for your contribution! 🙏
             else:
                 st.button("⛓️‍💥 No link", disabled=True, width="stretch")
 
-        rubric = str(st.session_state.get("human_eval_active_score_config_description") or "").strip() or str(
-            st.session_state.get("human_eval_score_config_description") or ""
+        rubric = str(st.session_state.get("human_eval_active_queue_description") or "").strip() or str(
+            st.session_state.get("human_eval_queue_description") or ""
         ).strip()
         if rubric:
-            st.markdown(rubric)
+            with st.expander("Rubric reminder", expanded=False):
+                st.markdown(rubric)
 
         notes = st.text_area(
             label="📝 Add notes _(optional)_",
@@ -906,7 +1154,7 @@ Thank you for your contribution! 🙏
             st.toast(f"Rated: {rating} ✓")
             st.rerun()
 
-        st.markdown("**✅ Submit a rating for this response**", help="NOTE: You can only rate a response once.")
+        st.markdown("**✅ Score this response**", help="NOTE: You can only rate a response once.")
         r1, r2, r3 = st.columns(3)
         with r1:
             if st.button(
@@ -937,7 +1185,7 @@ Thank you for your contribution! 🙏
                 _save_and_advance_with_langfuse(row, "unsure", str(notes or ""), idx, samples)
 
         st.download_button(
-            label="⬇️ Download CSV",
+            label="⬇️ Download Evals (.csv)",
             data=eval_csv_bytes,
             file_name=csv_filename,
             mime="text/csv",
@@ -947,47 +1195,5 @@ Thank you for your contribution! 🙏
 
         if st.button("💾 Save & End session", width="stretch"):
             st.session_state.human_eval_completed = True
-            st.download_button(
-                label="⬇️ Downloading...",
-                data=eval_csv_bytes,
-                file_name=csv_filename,
-                mime="text/csv",
-                key="human_eval_finish_csv",
-                width="stretch",
-            )
-            st.session_state.human_eval_samples = []
-            st.session_state.human_eval_annotations = {}
-            st.session_state.human_eval_index = 0
-            st.session_state.human_eval_started_at = None
-            st.session_state.human_eval_completed = False
-            st.session_state.human_eval_streak = 0
-            st.session_state.human_eval_showed_balloons = False
             st.toast("Session saved! ✅")
             st.rerun()
-
-
-def _save_and_advance(row: dict, rating: str, notes: str, idx: int, samples: list) -> None:
-    """Save annotation and advance to next item."""
-    tid = str(row.get("trace_id") or "")
-    existing_notes = st.session_state.human_eval_annotations.get(tid, {}).get("notes", "")
-    st.session_state.human_eval_annotations[tid] = {
-        "trace_id": row.get("trace_id"),
-        "timestamp": row.get("timestamp"),
-        "session_id": row.get("session_id"),
-        "environment": row.get("environment"),
-        "rating": rating,
-        "notes": notes or existing_notes,
-        "prompt": row.get("prompt"),
-        "answer": row.get("answer"),
-    }
-
-    st.session_state.human_eval_streak += 1
-
-    st.session_state.human_eval_clear_notes_next_run = True
-    st.session_state.human_eval_current_trace_id = ""
-
-    if idx < len(samples) - 1:
-        st.session_state.human_eval_index = idx + 1
-
-    st.toast(f"Rated: {rating} ✓")
-    st.rerun()

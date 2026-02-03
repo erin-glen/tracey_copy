@@ -2,6 +2,10 @@
 
 from utils.langfuse_api import (
     get_langfuse_headers,
+    get_annotation_queue_item,
+    get_annotation_queue,
+    list_annotation_queue_items,
+    fetch_trace,
     fetch_traces_window,
     fetch_user_first_seen,
     invalidate_user_first_seen_cache,
@@ -64,6 +68,10 @@ from utils.charts import (
 __all__ = [
     # Langfuse API
     "get_langfuse_headers",
+    "get_annotation_queue_item",
+    "get_annotation_queue",
+    "list_annotation_queue_items",
+    "fetch_trace",
     "fetch_traces_window",
     "fetch_user_first_seen",
     "invalidate_user_first_seen_cache",

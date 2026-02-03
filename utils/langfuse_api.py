@@ -45,6 +45,60 @@ def fetch_score_configs(
     return []
 
 
+def get_annotation_queue_item(
+    *,
+    base_url: str,
+    headers: dict[str, str],
+    queue_id: str,
+    item_id: str,
+    http_timeout_s: float = 30,
+) -> dict[str, Any]:
+    url = f"{base_url.rstrip('/')}/api/public/annotation-queues/{queue_id}/items/{item_id}"
+    r = requests.get(url, headers=headers, timeout=float(http_timeout_s))
+    r.raise_for_status()
+    out = r.json()
+    return out if isinstance(out, dict) else {}
+
+
+def get_annotation_queue(
+    *,
+    base_url: str,
+    headers: dict[str, str],
+    queue_id: str,
+    http_timeout_s: float = 30,
+) -> dict[str, Any]:
+    url = f"{base_url.rstrip('/')}/api/public/annotation-queues/{queue_id}"
+    r = requests.get(url, headers=headers, timeout=float(http_timeout_s))
+    r.raise_for_status()
+    out = r.json()
+    return out if isinstance(out, dict) else {}
+
+
+def list_annotation_queue_items(
+    *,
+    base_url: str,
+    headers: dict[str, str],
+    queue_id: str,
+    status: str | None = None,
+    page: int = 1,
+    limit: int = 100,
+    http_timeout_s: float = 30,
+) -> list[dict[str, Any]]:
+    url = f"{base_url.rstrip('/')}/api/public/annotation-queues/{queue_id}/items"
+    params: dict[str, Any] = {"page": int(page), "limit": int(limit)}
+    if status is not None and str(status).strip():
+        params["status"] = str(status)
+    r = requests.get(url, headers=headers, params=params, timeout=float(http_timeout_s))
+    r.raise_for_status()
+    data = r.json()
+    rows = data.get("data") if isinstance(data, dict) else None
+    if isinstance(rows, list):
+        return [x for x in rows if isinstance(x, dict)]
+    if isinstance(data, list):
+        return [x for x in data if isinstance(x, dict)]
+    return []
+
+
 def list_annotation_queues(
     *,
     base_url: str,
@@ -427,6 +481,20 @@ def fetch_traces_window(
             debug_out["cache_path"] = str(cache_path)
 
     return rows
+
+
+def fetch_trace(
+    *,
+    base_url: str,
+    headers: dict[str, str],
+    trace_id: str,
+    http_timeout_s: float = 30,
+) -> dict[str, Any]:
+    url = f"{base_url.rstrip('/')}/api/public/traces/{trace_id}"
+    r = requests.get(url, headers=headers, timeout=float(http_timeout_s))
+    r.raise_for_status()
+    out = r.json()
+    return out if isinstance(out, dict) else {}
 
 
 def fetch_user_first_seen(
