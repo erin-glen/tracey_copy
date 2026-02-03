@@ -108,7 +108,7 @@ def render_sidebar() -> dict[str, Any]:
         st.markdown("**📅 Date range**")
         date_preset = st.selectbox(
             "Date preset",
-            options=["All", "Last day", "Last week", "Last month", "Custom"],
+            options=["All", "Last day", "Last 3 days", "Last week", "Last month", "Custom"],
             index=1,
             label_visibility="collapsed",
             key="date_preset_select",
@@ -120,6 +120,10 @@ def render_sidebar() -> dict[str, Any]:
         use_date_filter = date_preset != "All"
         if date_preset == "Last day":
             start_date = default_end - timedelta(days=1)
+            end_date = default_end
+            st.caption(f"Using {start_date} to {end_date}")
+        elif date_preset == "Last 3 days":
+            start_date = default_end - timedelta(days=3)
             end_date = default_end
             st.caption(f"Using {start_date} to {end_date}")
         elif date_preset == "Last week":
