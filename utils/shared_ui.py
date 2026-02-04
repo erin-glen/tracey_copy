@@ -108,7 +108,7 @@ def render_sidebar() -> dict[str, Any]:
         st.markdown("**📅 Date range**")
         date_preset = st.selectbox(
             "Date preset",
-            options=["All", "Last day", "Last 3 days", "Last week", "Last month", "Custom"],
+            options=["Custom", "Last day", "Last 3 days", "Last week", "Last month", "All"],
             index=1,
             label_visibility="collapsed",
             key="date_preset_select",
