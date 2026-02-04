@@ -4,6 +4,7 @@ import re
 import json
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlparse
 
 
 def normalize_trace_format(row: dict[str, Any]) -> dict[str, Any]:
@@ -141,11 +142,13 @@ def extract_trace_context(trace: dict[str, Any]) -> dict[str, Any]:
         - datasets: list[str] - Datasets mentioned in tool call args
         - datasets_analysed: list[str] - Datasets found in API URLs
         - tools_used: list[str] - Names of tools called
+        - pull_data_calls: list[dict[str, Any]] - pull_data endpoint + params per call
     """
     aois: list[str] = []
     datasets: list[str] = []
     datasets_analysed: list[str] = []
     tools_used: list[str] = []
+    pull_data_calls: list[dict[str, Any]] = []
     aoi_name = ""
     aoi_type = ""
 
@@ -171,6 +174,50 @@ def extract_trace_context(trace: dict[str, Any]) -> dict[str, Any]:
                 tools_used.append(name)
             args = tc.get("args") or {}
             if isinstance(args, dict):
+                if name == "pull_data":
+                    raw_url = args.get("url") or args.get("endpoint") or args.get("path")
+                    endpoint = ""
+                    if isinstance(raw_url, str) and raw_url.strip():
+                        try:
+                            parsed = urlparse(raw_url)
+                            endpoint = parsed.path.lstrip("/")
+                        except Exception:
+                            endpoint = raw_url.strip().lstrip("/")
+
+                    start_date = args.get("start_date")
+                    end_date = args.get("end_date")
+                    aoi_names = args.get("aoi_names") or args.get("aoi_name")
+                    dataset_name = args.get("dataset_name") or args.get("dataset")
+                    query = args.get("query")
+
+                    raw_params: Any = args.get("params")
+                    if raw_params is None:
+                        raw_params = args.get("parameters")
+                    if raw_params is None:
+                        raw_params = args.get("query_params")
+                    if raw_params is None:
+                        raw_params = args.get("request_params")
+
+                    params: Any = raw_params
+                    if isinstance(raw_params, str):
+                        try:
+                            parsed_params = json.loads(raw_params)
+                            params = parsed_params
+                        except Exception:
+                            params = raw_params
+
+                    pull_data_calls.append(
+                        {
+                            "endpoint": endpoint,
+                            "start_date": start_date,
+                            "end_date": end_date,
+                            "aoi_names": aoi_names,
+                            "dataset_name": dataset_name,
+                            "query": query,
+                            "params": params,
+                        }
+                    )
+
                 for k in ["aoi", "aoi_name", "aoi_id", "area_of_interest"]:
                     v = args.get(k)
                     if v and str(v).strip() and str(v).strip() not in aois:
@@ -197,6 +244,7 @@ def extract_trace_context(trace: dict[str, Any]) -> dict[str, Any]:
         "datasets": datasets,
         "datasets_analysed": datasets_analysed,
         "tools_used": tools_used,
+        "pull_data_calls": pull_data_calls,
     }
 
 

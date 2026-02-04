@@ -375,6 +375,10 @@ def render(
             if evaluator_name.strip():
                 st.session_state.human_eval_evaluator_name = evaluator_name.strip()
 
+            name_ok = bool(str(st.session_state.get("human_eval_evaluator_name") or "").strip())
+            if not name_ok:
+                st.info("Enter a reviewer name to enable evaluation and sampling actions.")
+
             cfg_ok = bool(str(st.session_state.get("human_eval_score_config_id") or "").strip())
             queue_ok = bool(str(st.session_state.get("human_eval_queue_id") or "").strip())
             ready = bool(has_langfuse and cfg_ok and queue_ok)
@@ -401,7 +405,7 @@ def render(
                 if st.button(
                     f"▶️ Evaluate pending items ({pending_count})",
                     type="primary",
-                    disabled=not bool(ready and pending_count > 0),
+                    disabled=not bool(name_ok and ready and pending_count > 0),
                     help="Loads pending queue items from Langfuse and starts the evaluation session.",
                 ):
                     queue_id = str(st.session_state.human_eval_queue_id)
@@ -463,6 +467,7 @@ def render(
                                         "datasets": helper_info.get("datasets", []),
                                         "datasets_analysed": helper_info.get("datasets_analysed", []),
                                         "tools_used": helper_info.get("tools_used", []),
+                                        "pull_data_calls": helper_info.get("pull_data_calls", []),
                                         "aoi_name": helper_info.get("aoi_name", ""),
                                         "aoi_type": helper_info.get("aoi_type", ""),
                                         "filter_match": False,
@@ -691,7 +696,12 @@ def render(
             if not ready:
                 st.warning("Complete steps 1-2 to enable sampling.")
 
-            if st.button("🎲 Sample traces and add to queue", type="primary", disabled=not ready):
+            if st.button(
+                "🎲 Sample traces and add to queue",
+                type="primary",
+                disabled=not bool(name_ok and ready),
+                help="Enter a reviewer name above to enable sampling.",
+            ):
                 normed: list[dict[str, Any]] = []
 
                 criteria = str(st.session_state.get("human_eval_filter_criteria", "") or "")
@@ -739,6 +749,7 @@ def render(
                             "datasets": helper_info.get("datasets", []),
                             "datasets_analysed": helper_info.get("datasets_analysed", []),
                             "tools_used": helper_info.get("tools_used", []),
+                            "pull_data_calls": helper_info.get("pull_data_calls", []),
                             "aoi_name": helper_info.get("aoi_name", ""),
                             "aoi_type": helper_info.get("aoi_type", ""),
                             "filter_match": True if filter_active and criteria.strip() else False,
@@ -936,10 +947,10 @@ def render(
 
     def _render_content():
         """Render prompt and output content."""
-        st.markdown("**`(つ ⊙_⊙)つ` User Prompt**")
+        st.markdown("**`(つ ⊙_⊙)つ` User Prompt**", help="What the user typed into GNW")
         st.code(prompt_text, language=None, wrap_lines=True)
 
-        st.markdown("**`|> °-°|>` Zeno Output**")
+        st.markdown("**`|> °-°|>` Zeno Output**", help="What Zeno generated, in raw text")
         st.code(answer_text, language=None, wrap_lines=True)
 
         # Helper info expander (collapsed by default)
@@ -947,28 +958,54 @@ def render(
         datasets = row.get("datasets") or []
         datasets_analysed = row.get("datasets_analysed") or []
         tools_used = row.get("tools_used") or []
+        pull_data_calls = row.get("pull_data_calls") or []
         aoi_name = str(row.get("aoi_name") or "")
         aoi_type = str(row.get("aoi_type") or "")
-        has_helper_info = aois or datasets or datasets_analysed or tools_used or aoi_name or aoi_type
+        has_helper_info = aois or datasets or datasets_analysed or tools_used or pull_data_calls or aoi_name or aoi_type
         if has_helper_info:
             with st.expander("📋 Context Helper", expanded=False):
-                cols = st.columns(4)
+                st.info("Note: context is pulled from the entire conversation history.")
+                cols = st.columns(3)
                 with cols[0]:
-                    st.caption("**AOIs Considered**")
-                    st.write(", ".join(aois) if aois else "—")
+                    st.caption("**AOI selected**")
+                    st.write(f"{aoi_name} ({aoi_type})".strip() if aoi_name or aoi_type else "—")
                 with cols[1]:
-                    st.caption("**Datasets Considered**")
+                    st.caption("**Datasets selected**")
                     st.write(", ".join(datasets) if datasets else "—")
                 with cols[2]:
-                    st.caption("**Datasets analysed**")
-                    st.write(", ".join(datasets_analysed) if datasets_analysed else "—")
-                with cols[3]:
                     st.caption("**Tools Selected**")
                     st.write(", ".join(tools_used) if tools_used else "—")
 
-                if aoi_name or aoi_type:
-                    st.caption("**AOI selected**")
-                    st.write(f"{aoi_name} ({aoi_type})".strip() if aoi_name or aoi_type else "—")
+                if pull_data_calls:
+                    st.caption("**pull_data calls**", help="")
+                    rows = []
+                    for c in pull_data_calls:
+                        if not isinstance(c, dict):
+                            continue
+                        start_date = str(c.get("start_date") or "").strip()
+                        end_date = str(c.get("end_date") or "").strip()
+                        date_range = ""
+                        if start_date or end_date:
+                            date_range = f"{start_date or '—'} → {end_date or '—'}"
+
+                        aoi_names = c.get("aoi_names")
+                        if isinstance(aoi_names, list):
+                            aoi_str = ", ".join([str(x) for x in aoi_names if str(x).strip()])
+                        else:
+                            aoi_str = str(aoi_names or "").strip()
+
+                        dataset_name = str(c.get("dataset_name") or "").strip()
+                        query = str(c.get("query") or "").strip()
+                        rows.append(
+                            {
+                                "aoi": aoi_str or "—",
+                                "dataset": dataset_name or "—",
+                                "date_range": date_range or "—",
+                                "query": query or "—",
+                            }
+                        )
+                    if rows:
+                        st.dataframe(rows, hide_index=True, width="stretch")
 
     col_content, col_controls = st.columns([13, 8], gap="small")
 
@@ -1003,7 +1040,8 @@ def render(
             st.session_state.get("human_eval_queue_description") or ""
         ).strip()
         if rubric:
-            with st.expander("❓ Rubric reminder", expanded=False, help="See this queue's rubric for scoring"):
+            st.caption("See this queue's rubric for scoring")
+            with st.expander("❓ Rubric reminder", expanded=False):
                 st.markdown(rubric)
 
         notes = st.text_area(
