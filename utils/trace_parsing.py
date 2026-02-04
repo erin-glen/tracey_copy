@@ -143,12 +143,14 @@ def extract_trace_context(trace: dict[str, Any]) -> dict[str, Any]:
         - datasets_analysed: list[str] - Datasets found in API URLs
         - tools_used: list[str] - Names of tools called
         - pull_data_calls: list[dict[str, Any]] - pull_data endpoint + params per call
+        - chart_insight_text: str - Raw text output from generate_insight tool (if present)
     """
     aois: list[str] = []
     datasets: list[str] = []
     datasets_analysed: list[str] = []
     tools_used: list[str] = []
     pull_data_calls: list[dict[str, Any]] = []
+    chart_insight_text = ""
     aoi_name = ""
     aoi_type = ""
 
@@ -165,6 +167,30 @@ def extract_trace_context(trace: dict[str, Any]) -> dict[str, Any]:
             if m_aoi:
                 aoi_name = (m_aoi.group(1) or "").strip()
                 aoi_type = (m_aoi.group(2) or "").strip()
+
+        if (
+            not chart_insight_text
+            and m.get("type") == "tool"
+            and str(m.get("name") or "") in {"generate_insight", "generate_insights"}
+        ):
+            chart_insight_text = str(m.get("content") or "").strip()
+
+        if not chart_insight_text and m.get("type") == "ai":
+            for tc in (m.get("tool_calls") or []):
+                if not isinstance(tc, dict):
+                    continue
+                if str(tc.get("name") or "") not in {"generate_insight", "generate_insights"}:
+                    continue
+                args = tc.get("args") or {}
+                if not isinstance(args, dict):
+                    continue
+                for k in ["insight", "text", "content", "summary", "analysis"]:
+                    v = args.get(k)
+                    if isinstance(v, str) and v.strip():
+                        chart_insight_text = v.strip()
+                        break
+                if chart_insight_text:
+                    break
 
         for tc in (m.get("tool_calls") or []):
             if not isinstance(tc, dict):
@@ -245,6 +271,7 @@ def extract_trace_context(trace: dict[str, Any]) -> dict[str, Any]:
         "datasets_analysed": datasets_analysed,
         "tools_used": tools_used,
         "pull_data_calls": pull_data_calls,
+        "chart_insight_text": chart_insight_text,
     }
 
 

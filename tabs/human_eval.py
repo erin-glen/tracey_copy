@@ -533,6 +533,7 @@ def render(
                                         "datasets_analysed": helper_info.get("datasets_analysed", []),
                                         "tools_used": helper_info.get("tools_used", []),
                                         "pull_data_calls": helper_info.get("pull_data_calls", []),
+                                        "chart_insight_text": helper_info.get("chart_insight_text", ""),
                                         "aoi_name": helper_info.get("aoi_name", ""),
                                         "aoi_type": helper_info.get("aoi_type", ""),
                                         "filter_match": False,
@@ -815,6 +816,7 @@ def render(
                             "datasets_analysed": helper_info.get("datasets_analysed", []),
                             "tools_used": helper_info.get("tools_used", []),
                             "pull_data_calls": helper_info.get("pull_data_calls", []),
+                            "chart_insight_text": helper_info.get("chart_insight_text", ""),
                             "aoi_name": helper_info.get("aoi_name", ""),
                             "aoi_type": helper_info.get("aoi_type", ""),
                             "filter_match": True if filter_active and criteria.strip() else False,
@@ -1012,11 +1014,20 @@ def render(
 
     def _render_content():
         """Render prompt and output content."""
+        if trace_id:
+            st.caption(f"Trace ID: `{trace_id}`")
         st.markdown("**`(つ ⊙_⊙)つ` User Prompt**", help="What the user typed into GNW")
         st.code(prompt_text, language=None, wrap_lines=True)
 
         st.markdown("**`|> °-°|>` Zeno Output**", help="What Zeno generated, in raw text")
         st.code(answer_text, language=None, wrap_lines=True)
+
+        chart_insight_text = str(row.get("chart_insight_text") or "").strip()
+        with st.expander("📈 Chart Insight", expanded=False):
+            if chart_insight_text:
+                st.code(chart_insight_text, language=None, wrap_lines=True)
+            else:
+                st.caption("No `generate_insight` tool output found for this trace.")
 
         # Helper info expander (collapsed by default)
         aois = row.get("aois") or []
@@ -1090,7 +1101,7 @@ def render(
 
         st.caption(_get_encouragement(progress))
 
-        nav_c1, nav_c2 = st.columns(2)
+        nav_c1, nav_c2, nav_c3 = st.columns(3)
         with nav_c1:
             if st.button("⬅️ Prev", disabled=(idx <= 0), width="stretch"):
                 st.session_state.human_eval_index = idx - 1
@@ -1100,6 +1111,13 @@ def render(
                 st.link_button("🔗 View on GNW", url, width="stretch")
             else:
                 st.button("⛓️‍💥 No link", disabled=True, width="stretch")
+        with nav_c3:
+            if st.button("Skip ➡️", width="stretch", disabled=(idx >= len(samples) - 1)):
+                st.session_state.human_eval_clear_notes_next_run = True
+                st.session_state.human_eval_current_trace_id = ""
+                if idx < len(samples) - 1:
+                    st.session_state.human_eval_index = idx + 1
+                st.rerun()
 
         rubric = str(st.session_state.get("human_eval_active_queue_description") or "").strip() or str(
             st.session_state.get("human_eval_queue_description") or ""
