@@ -903,7 +903,6 @@ def render(
                 "trace_id": tid,
                 "prompt": str(r.get("prompt") or ""),
                 "answer": str(r.get("answer") or ""),
-                "session_id": str(r.get("session_id") or ""),
                 "rating": rating,
                 "notes": str(ann.get("notes") or ""),
                 "timestamp": str(r.get("timestamp") or ""),
@@ -940,9 +939,9 @@ def render(
         if active_queue_name or active_queue_id:
             st.caption(f"Eval queue: {active_queue_name or active_queue_id}")
 
-        pass_n = sum(1 for r in eval_rows if r.get("status") == "evaluated" and r.get("rating") == "pass")
-        fail_n = sum(1 for r in eval_rows if r.get("status") == "evaluated" and r.get("rating") == "fail")
-        unsure_n = sum(1 for r in eval_rows if r.get("status") == "evaluated" and r.get("rating") == "unsure")
+        pass_n = sum(1 for r in eval_rows if r.get("status") == "COMPLETE" and r.get("rating") == "pass")
+        fail_n = sum(1 for r in eval_rows if r.get("status") == "COMPLETE" and r.get("rating") == "fail")
+        unsure_n = sum(1 for r in eval_rows if r.get("status") == "COMPLETE" and r.get("rating") == "unsure")
 
         queue_pending = None
         queue_completed = None
@@ -979,9 +978,9 @@ def render(
         with cols[3]:
             st.metric("⏱️ Avg (s)", f"{avg_secs:.1f}")
         with cols[4]:
-            st.metric("⏳ Queue pending", "—" if queue_pending is None else str(queue_pending))
+            st.metric("⏳ Items pending", "—" if queue_pending is None else str(queue_pending))
         with cols[5]:
-            st.metric("✅ Queue completed", "—" if queue_completed is None else str(queue_completed))
+            st.metric("✅ Items completed", "—" if queue_completed is None else str(queue_completed))
 
         st.markdown("## 📊 Evaluation results")
         st.dataframe(eval_rows, hide_index=True, width="stretch")
@@ -1014,8 +1013,6 @@ def render(
 
     def _render_content():
         """Render prompt and output content."""
-        if trace_id:
-            st.caption(f"Trace ID: `{trace_id}`")
         st.markdown("**`(つ ⊙_⊙)つ` User Prompt**", help="What the user typed into GNW")
         st.code(prompt_text, language=None, wrap_lines=True)
 
@@ -1089,6 +1086,8 @@ def render(
         _render_content()
 
     with col_controls:
+        if trace_id:
+            st.caption(f"Trace ID: `{trace_id}`")
         st.progress(progress)
         stat_c1, stat_c2, stat_c3 = st.columns(3)
         with stat_c1:
@@ -1100,7 +1099,7 @@ def render(
             st.metric("🔥", streak if streak > 0 else "-")
 
         st.caption(_get_encouragement(progress))
-
+        
         nav_c1, nav_c2, nav_c3 = st.columns(3)
         with nav_c1:
             if st.button("⬅️ Prev", disabled=(idx <= 0), width="stretch"):
@@ -1108,9 +1107,9 @@ def render(
                 st.rerun()
         with nav_c2:
             if url:
-                st.link_button("🔗 View on GNW", url, width="stretch")
+                st.link_button("🔗 Go to GNW", url, width="stretch")
             else:
-                st.button("⛓️‍💥 No link", disabled=True, width="stretch")
+                st.button("⛓️ No link", disabled=True, width="stretch")
         with nav_c3:
             if st.button("Skip ➡️", width="stretch", disabled=(idx >= len(samples) - 1)):
                 st.session_state.human_eval_clear_notes_next_run = True
