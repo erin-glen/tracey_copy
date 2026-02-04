@@ -4,6 +4,7 @@ import json
 import random
 import time
 import hashlib
+import threading
 from typing import Any
 
 import streamlit as st
@@ -75,6 +76,70 @@ def _format_elapsed(started_at: float | None) -> str:
     mins = int(elapsed // 60)
     secs = int(elapsed % 60)
     return f"{mins:02d}:{secs:02d}"
+
+
+def _background_langfuse_write(
+    base_url: str,
+    headers: dict,
+    tid: str,
+    score_name: str,
+    score_value: str,
+    environment: str | None,
+    formatted_comment: str | None,
+    evaluator: str,
+    config_id: str | None,
+    queue_id: str | None,
+    score_id: str,
+    item_id: str | None,
+) -> None:
+    """Write score and update queue item in background thread (fire-and-forget)."""
+    try:
+        create_score(
+            base_url=base_url,
+            headers=headers,
+            trace_id=tid,
+            name=score_name,
+            value=score_value,
+            environment=environment,
+            comment=formatted_comment,
+            metadata={"evaluator": evaluator},
+            config_id=config_id,
+            queue_id=queue_id,
+            score_id=score_id,
+        )
+    except Exception:
+        try:
+            delete_score(base_url=base_url, headers=headers, score_id=score_id)
+        except Exception:
+            pass
+        try:
+            create_score(
+                base_url=base_url,
+                headers=headers,
+                trace_id=tid,
+                name=score_name,
+                value=score_value,
+                environment=environment,
+                comment=formatted_comment,
+                metadata={"evaluator": evaluator},
+                config_id=config_id,
+                queue_id=queue_id,
+                score_id=score_id,
+            )
+        except Exception:
+            pass
+
+    if queue_id and item_id:
+        try:
+            update_annotation_queue_item(
+                base_url=base_url,
+                headers=headers,
+                queue_id=queue_id,
+                item_id=item_id,
+                status="COMPLETED",
+            )
+        except Exception:
+            pass
 
 
 def render(
@@ -1094,95 +1159,40 @@ def render(
                 if evaluator.strip():
                     formatted_comment = f"{formatted_comment}\n-{evaluator.strip()}"
 
-            has_langfuse = bool(public_key and secret_key and base_url)
-            if not has_langfuse:
-                st.session_state.human_eval_streak += 1
-                st.session_state.human_eval_clear_notes_next_run = True
-                st.session_state.human_eval_current_trace_id = ""
-
-                if idx < len(samples) - 1:
-                    st.session_state.human_eval_index = idx + 1
-
-                st.toast(f"Rated: {rating} ✓")
-                st.rerun()
-
-            # Best-effort: upsert score (create; if conflicts, delete old and recreate)
-            try:
-                score_id = _deterministic_score_id(tid, config_id or score_name, evaluator)
-                created = create_score(
-                    base_url=base_url,
-                    headers=headers,
-                    trace_id=tid,
-                    name=score_name,
-                    value=score_value,
-                    environment=str(row.get("environment") or "") or None,
-                    comment=formatted_comment or None,
-                    metadata={"evaluator": evaluator},
-                    config_id=config_id or None,
-                    queue_id=queue_id or None,
-                    score_id=score_id,
-                )
-                new_score_id = str(created.get("id") or "").strip()
-                if new_score_id:
-                    existing_scores = st.session_state.get("human_eval_langfuse_scores", {})
-                    if not isinstance(existing_scores, dict):
-                        existing_scores = {}
-                    existing_scores[tid] = new_score_id
-                    st.session_state.human_eval_langfuse_scores = existing_scores
-            except Exception:
-                try:
-                    existing_scores = st.session_state.get("human_eval_langfuse_scores", {})
-                    old_score_id = existing_scores.get(tid) if isinstance(existing_scores, dict) else None
-                    if isinstance(old_score_id, str) and old_score_id.strip():
-                        delete_score(base_url=base_url, headers=headers, score_id=old_score_id)
-                except Exception:
-                    pass
-                try:
-                    score_id = _deterministic_score_id(tid, config_id or score_name, evaluator)
-                    created = create_score(
-                        base_url=base_url,
-                        headers=headers,
-                        trace_id=tid,
-                        name=score_name,
-                        value=score_value,
-                        environment=str(row.get("environment") or "") or None,
-                        comment=formatted_comment or None,
-                        metadata={"evaluator": evaluator},
-                        config_id=config_id or None,
-                        queue_id=queue_id or None,
-                        score_id=score_id,
-                    )
-                    new_score_id = str(created.get("id") or "").strip()
-                    if new_score_id:
-                        existing_scores = st.session_state.get("human_eval_langfuse_scores", {})
-                        if not isinstance(existing_scores, dict):
-                            existing_scores = {}
-                        existing_scores[tid] = new_score_id
-                        st.session_state.human_eval_langfuse_scores = existing_scores
-                except Exception:
-                    pass
-
-            # Best-effort: mark queue item completed
-            try:
-                item_map = st.session_state.get("human_eval_queue_items", {})
-                item_id = item_map.get(tid) if isinstance(item_map, dict) else None
-                if queue_id and isinstance(item_id, str) and item_id.strip():
-                    update_annotation_queue_item(
-                        base_url=base_url,
-                        headers=headers,
-                        queue_id=queue_id,
-                        item_id=item_id,
-                        status="COMPLETED",
-                    )
-            except Exception:
-                pass
-
+            # Update local state immediately (before any API calls)
             st.session_state.human_eval_streak += 1
             st.session_state.human_eval_clear_notes_next_run = True
             st.session_state.human_eval_current_trace_id = ""
 
             if idx < len(samples) - 1:
                 st.session_state.human_eval_index = idx + 1
+
+            # Fire-and-forget: Langfuse writes in background thread
+            has_langfuse = bool(public_key and secret_key and base_url)
+            if has_langfuse:
+                score_id = _deterministic_score_id(tid, config_id or score_name, evaluator)
+                item_map = st.session_state.get("human_eval_queue_items", {})
+                item_id = item_map.get(tid) if isinstance(item_map, dict) else None
+
+                thread = threading.Thread(
+                    target=_background_langfuse_write,
+                    kwargs={
+                        "base_url": base_url,
+                        "headers": dict(headers),
+                        "tid": tid,
+                        "score_name": score_name,
+                        "score_value": score_value,
+                        "environment": str(row.get("environment") or "") or None,
+                        "formatted_comment": formatted_comment or None,
+                        "evaluator": evaluator,
+                        "config_id": config_id or None,
+                        "queue_id": queue_id or None,
+                        "score_id": score_id,
+                        "item_id": item_id if isinstance(item_id, str) and item_id.strip() else None,
+                    },
+                    daemon=True,
+                )
+                thread.start()
 
             st.toast(f"Rated: {rating} ✓")
             st.rerun()
