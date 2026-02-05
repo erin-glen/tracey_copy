@@ -233,13 +233,14 @@ def create_score(
         payload["configId"] = str(config_id)
     if queue_id is not None and str(queue_id).strip():
         payload["queueId"] = str(queue_id)
-        payload["source"] = "ANNOTATION"
-    else:
-        payload["source"] = "API"
+    payload["source"] = "API"
 
     r = requests.post(url, headers=headers, json=payload, timeout=float(http_timeout_s))
     r.raise_for_status()
     out = r.json()
+
+    # TODO check response status and confirm payload.id == out.id. If not, raise an exception and surface the error message in the UI
+
     return out if isinstance(out, dict) else {}
 
 

@@ -5,6 +5,7 @@ import random
 import time
 import hashlib
 import threading
+import re
 from typing import Any
 
 import streamlit as st
@@ -43,12 +44,12 @@ ENCOURAGEMENT_MESSAGES = [
     "Halfway there! ",
     "Almost done! ",
     "Final stretch! ",
-    "Great start! 🚀",
-    "You're on a roll! 🔥",
-    "Keep it up! 💪",
-    "Halfway there! 🎯",
-    "Almost done! 🏁",
-    "Final stretch! ⭐",
+    "Great start! ",
+    "You're on a roll! ",
+    "Keep it up! ",
+    "Halfway there! ",
+    "Almost done! ",
+    "Final stretch! ",
 ]
 
 
@@ -102,7 +103,7 @@ def _background_langfuse_write(
             value=score_value,
             environment=environment,
             comment=formatted_comment,
-            metadata={"evaluator": evaluator},
+            metadata={"evaluator": evaluator, "source": "Tracey"},
             config_id=config_id,
             queue_id=queue_id,
             score_id=score_id,
@@ -121,7 +122,7 @@ def _background_langfuse_write(
                 value=score_value,
                 environment=environment,
                 comment=formatted_comment,
-                metadata={"evaluator": evaluator},
+                metadata={"evaluator": evaluator, "source": "Tracey"},
                 config_id=config_id,
                 queue_id=queue_id,
                 score_id=score_id,
@@ -155,6 +156,12 @@ def render(
         "Create or select an eval queue, sample traces into it, and rate responses against a score rubric. "
         "Your ratings are written back to Langfuse so the queue reflects progress."
     )
+
+    def _slugify_name(s: str) -> str:
+        t = (s or "").strip().lower()
+        t = re.sub(r"[^a-z0-9]+", "-", t)
+        t = re.sub(r"-+", "-", t)
+        return t.strip("-")
 
     init_session_state({
         "human_eval_annotations": {},
@@ -431,14 +438,14 @@ def render(
         with step3_container:
             st.subheader("3. Start Evaluating!")
             evaluator_name = st.text_input(
-                "Reviewer name",
+                "Reviewer full name (to create unique scores)",
                 value=st.session_state.human_eval_evaluator_name,
-                placeholder="e.g. Alice",
+                placeholder="e.g. Alice Smith",
                 key="_eval_name_input",
                 help="Used in CSV filename and appended to Langfuse score comments.",
             )
             if evaluator_name.strip():
-                st.session_state.human_eval_evaluator_name = evaluator_name.strip()
+                st.session_state.human_eval_evaluator_name = _slugify_name(evaluator_name)
 
             name_ok = bool(str(st.session_state.get("human_eval_evaluator_name") or "").strip())
             if not name_ok:
@@ -1165,7 +1172,7 @@ def render(
             evaluator = str(st.session_state.get("human_eval_evaluator_name") or "").strip() or "anon"
             score_name = config_name or "human_eval"
 
-            score_value = {"pass": "pass", "fail": "fail", "unsure": "unsure"}.get(
+            score_value = {"pass": "Pass", "fail": "Fail", "unsure": "Unsure"}.get(
                 str(rating),
                 str(rating),
             )
@@ -1173,8 +1180,6 @@ def render(
             formatted_comment = ""
             if str(notes or "").strip():
                 formatted_comment = str(notes).rstrip()
-                if evaluator.strip():
-                    formatted_comment = f"{formatted_comment}\n-{evaluator.strip()}"
 
             # Update local state immediately (before any API calls)
             st.session_state.human_eval_streak += 1
@@ -1187,7 +1192,7 @@ def render(
             # Fire-and-forget: Langfuse writes in background thread
             has_langfuse = bool(public_key and secret_key and base_url)
             if has_langfuse:
-                score_id = _deterministic_score_id(tid, config_id or score_name, evaluator)
+                score_id = _deterministic_score_id(tid, score_name, evaluator)
                 item_map = st.session_state.get("human_eval_queue_items", {})
                 item_id = item_map.get(tid) if isinstance(item_map, dict) else None
 
