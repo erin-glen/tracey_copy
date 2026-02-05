@@ -8,6 +8,7 @@ import time as time_mod
 from pathlib import Path
 from typing import Any
 from datetime import date
+from urllib.parse import urlencode
 
 import requests
 
@@ -16,6 +17,52 @@ try:
     HAS_STREAMLIT = True
 except ImportError:
     HAS_STREAMLIT = False
+
+
+def _http_debug_enabled() -> bool:
+    v = str(os.getenv("LANGFUSE_HTTP_DEBUG", "") or "").strip().lower()
+    return v in {"1", "true", "yes", "y", "on"}
+
+
+def _preview_text(s: Any, limit: int = 1400) -> str:
+    try:
+        txt = str(s)
+    except Exception:
+        return ""
+    if len(txt) <= limit:
+        return txt
+    return txt[:limit] + "…"
+
+
+def _log_http(
+    *,
+    method: str,
+    url: str,
+    params: dict[str, Any] | None,
+    json_payload: Any | None,
+    response: requests.Response,
+) -> None:
+    if not _http_debug_enabled():
+        return
+    try:
+        qs = ""
+        if isinstance(params, dict) and params:
+            try:
+                qs = urlencode(params, doseq=True)
+            except Exception:
+                qs = ""
+        full_url = f"{url}?{qs}" if qs else url
+        status = int(getattr(response, "status_code", 0) or 0)
+        print(f"[Langfuse HTTP] {method.upper()} {full_url} -> {status}")
+        if json_payload is not None:
+            print(f"[Langfuse HTTP] request.json: {_preview_text(json_payload)}")
+        try:
+            data = response.json()
+            print(f"[Langfuse HTTP] response.json: {_preview_text(data)}")
+        except Exception:
+            print(f"[Langfuse HTTP] response.text: {_preview_text(getattr(response, 'text', '') or '')}")
+    except Exception:
+        return
 
 
 def get_langfuse_headers(public_key: str, secret_key: str) -> dict[str, str]:
@@ -35,6 +82,7 @@ def fetch_score_configs(
     url = f"{base_url.rstrip('/')}/api/public/score-configs"
     params = {"page": int(page), "limit": int(limit)}
     r = requests.get(url, headers=headers, params=params, timeout=float(http_timeout_s))
+    _log_http(method="GET", url=url, params=params, json_payload=None, response=r)
     r.raise_for_status()
     data = r.json()
     rows = data.get("data") if isinstance(data, dict) else None
@@ -55,6 +103,7 @@ def get_annotation_queue_item(
 ) -> dict[str, Any]:
     url = f"{base_url.rstrip('/')}/api/public/annotation-queues/{queue_id}/items/{item_id}"
     r = requests.get(url, headers=headers, timeout=float(http_timeout_s))
+    _log_http(method="GET", url=url, params=None, json_payload=None, response=r)
     r.raise_for_status()
     out = r.json()
     return out if isinstance(out, dict) else {}
@@ -69,6 +118,7 @@ def get_annotation_queue(
 ) -> dict[str, Any]:
     url = f"{base_url.rstrip('/')}/api/public/annotation-queues/{queue_id}"
     r = requests.get(url, headers=headers, timeout=float(http_timeout_s))
+    _log_http(method="GET", url=url, params=None, json_payload=None, response=r)
     r.raise_for_status()
     out = r.json()
     return out if isinstance(out, dict) else {}
@@ -89,6 +139,7 @@ def list_annotation_queue_items(
     if status is not None and str(status).strip():
         params["status"] = str(status)
     r = requests.get(url, headers=headers, params=params, timeout=float(http_timeout_s))
+    _log_http(method="GET", url=url, params=params, json_payload=None, response=r)
     r.raise_for_status()
     data = r.json()
     rows = data.get("data") if isinstance(data, dict) else None
@@ -110,6 +161,7 @@ def list_annotation_queues(
     url = f"{base_url.rstrip('/')}/api/public/annotation-queues"
     params = {"page": int(page), "limit": int(limit)}
     r = requests.get(url, headers=headers, params=params, timeout=float(http_timeout_s))
+    _log_http(method="GET", url=url, params=params, json_payload=None, response=r)
     r.raise_for_status()
     data = r.json()
     rows = data.get("data") if isinstance(data, dict) else None
@@ -137,6 +189,7 @@ def create_annotation_queue(
     if description is not None:
         payload["description"] = str(description)
     r = requests.post(url, headers=headers, json=payload, timeout=float(http_timeout_s))
+    _log_http(method="POST", url=url, params=None, json_payload=payload, response=r)
     r.raise_for_status()
     out = r.json()
     return out if isinstance(out, dict) else {}
@@ -160,6 +213,7 @@ def create_annotation_queue_item(
     if status is not None:
         payload["status"] = str(status)
     r = requests.post(url, headers=headers, json=payload, timeout=float(http_timeout_s))
+    _log_http(method="POST", url=url, params=None, json_payload=payload, response=r)
     r.raise_for_status()
     out = r.json()
     return out if isinstance(out, dict) else {}
@@ -177,6 +231,7 @@ def update_annotation_queue_item(
     url = f"{base_url.rstrip('/')}/api/public/annotation-queues/{queue_id}/items/{item_id}"
     payload: dict[str, Any] = {"status": str(status)}
     r = requests.patch(url, headers=headers, json=payload, timeout=float(http_timeout_s))
+    _log_http(method="PATCH", url=url, params=None, json_payload=payload, response=r)
     r.raise_for_status()
     out = r.json()
     return out if isinstance(out, dict) else {}
@@ -237,6 +292,7 @@ def create_score(
     payload["source"] = "API"
 
     r = requests.post(url, headers=headers, json=payload, timeout=float(http_timeout_s))
+    _log_http(method="POST", url=url, params=None, json_payload=payload, response=r)
     if int(getattr(r, "status_code", 0) or 0) >= 400:
         details: str | None = None
         try:
@@ -301,6 +357,7 @@ def delete_score(
 ) -> None:
     url = f"{base_url.rstrip('/')}/api/public/scores/{score_id}"
     r = requests.delete(url, headers=headers, timeout=float(http_timeout_s))
+    _log_http(method="DELETE", url=url, params=None, json_payload=None, response=r)
     if r.status_code in (200, 204, 404):
         return
     r.raise_for_status()
@@ -327,11 +384,12 @@ def fetch_scores_by_queue(
     current_page = page
     while True:
         params: dict[str, Any] = {
-            "fields": ['score', 'trace'],
+            "queueId": str(queue_id),
             "page": int(current_page),
             "limit": int(limit),
         }
         r = requests.get(url, headers=headers, params=params, timeout=float(http_timeout_s))
+        _log_http(method="GET", url=url, params=params, json_payload=None, response=r)
         r.raise_for_status()
         data = r.json()
        
@@ -354,8 +412,6 @@ def fetch_scores_by_queue(
         current_page += 1
     
     meta["fetchedCount"] = len(all_scores)
-    # TODO remove
-    print(all_scores, '\n\n') 
     return all_scores, meta
 
 

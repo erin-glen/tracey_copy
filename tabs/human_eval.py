@@ -9,6 +9,7 @@ import re
 from typing import Any
 
 import streamlit as st
+import pandas as pd
 
 from utils import (
     get_langfuse_headers,
@@ -211,6 +212,71 @@ def render(
     })
 
     headers = get_langfuse_headers(public_key, secret_key) if public_key and secret_key else {}
+
+    def _extract_chart_data(trace: dict[str, Any]) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+
+        def _collect_from_obj(obj: Any, seen: set[int]) -> None:
+            if obj is None:
+                return
+
+            obj_id = id(obj)
+            if obj_id in seen:
+                return
+            seen.add(obj_id)
+
+            if isinstance(obj, dict):
+                cd = obj.get("charts_data")
+                if cd is None:
+                    cd = obj.get("chart_data")
+
+                if isinstance(cd, list):
+                    for it in cd:
+                        if isinstance(it, dict):
+                            out.append(it)
+
+                for v in obj.values():
+                    _collect_from_obj(v, seen)
+                return
+
+            if isinstance(obj, list):
+                for it in obj:
+                    _collect_from_obj(it, seen)
+                return
+
+            return
+
+        _collect_from_obj(trace, set())
+
+        if out:
+            return out
+        top_level = trace.get("charts_data")
+        if isinstance(top_level, list):
+            for it in top_level:
+                if isinstance(it, dict):
+                    out.append(it)
+
+        for msgs in [
+            ((trace.get("output") or {}).get("messages") or []),
+            ((trace.get("input") or {}).get("messages") or []),
+        ]:
+            for m in msgs:
+                if not isinstance(m, dict):
+                    continue
+
+                cd = m.get("charts_data")
+                if cd is None:
+                    cd = m.get("chart_data")
+                if cd is None and isinstance(m.get("content"), dict):
+                    cd = (m.get("content") or {}).get("charts_data")
+                    if cd is None:
+                        cd = (m.get("content") or {}).get("chart_data")
+
+                if isinstance(cd, list):
+                    for it in cd:
+                        if isinstance(it, dict):
+                            out.append(it)
+        return out
 
     def _deterministic_score_id(trace_id: str, config_id: str, evaluator: str) -> str:
         raw = f"{trace_id}||{config_id}||{evaluator}".encode("utf-8")
@@ -543,6 +609,7 @@ def render(
                             answer = final_ai_message(n)
                             if prompt and answer:
                                 helper_info = extract_trace_context(n)
+                                chart_data = _extract_chart_data(n)
                                 loaded.append(
                                     {
                                         "trace_id": n.get("id"),
@@ -557,6 +624,7 @@ def render(
                                         "tools_used": helper_info.get("tools_used", []),
                                         "pull_data_calls": helper_info.get("pull_data_calls", []),
                                         "chart_insight_text": helper_info.get("chart_insight_text", ""),
+                                        "chart_data": chart_data,
                                         "aoi_name": helper_info.get("aoi_name", ""),
                                         "aoi_type": helper_info.get("aoi_type", ""),
                                         "filter_match": False,
@@ -826,6 +894,7 @@ def render(
                             continue
 
                     helper_info = extract_trace_context(n)
+                    chart_data = _extract_chart_data(n)
                     normed.append(
                         {
                             "trace_id": n.get("id"),
@@ -840,6 +909,7 @@ def render(
                             "tools_used": helper_info.get("tools_used", []),
                             "pull_data_calls": helper_info.get("pull_data_calls", []),
                             "chart_insight_text": helper_info.get("chart_insight_text", ""),
+                            "chart_data": chart_data,
                             "aoi_name": helper_info.get("aoi_name", ""),
                             "aoi_type": helper_info.get("aoi_type", ""),
                             "filter_match": True if filter_active and criteria.strip() else False,
@@ -1042,12 +1112,45 @@ def render(
         st.markdown("**`|> °-°|>` Zeno Output**", help="What Zeno generated, in raw text")
         st.code(answer_text, language=None, wrap_lines=True)
 
-        chart_insight_text = str(row.get("chart_insight_text") or "").strip()
-        with st.expander("📈 Chart Insight", expanded=False):
-            if chart_insight_text:
-                st.code(chart_insight_text, language=None, wrap_lines=True)
-            else:
-                st.caption("No `generate_insight` tool output found for this trace.")
+        chart_data = row.get("chart_data") or row.get("charts_data") or []
+        if isinstance(chart_data, list) and chart_data:
+            with st.expander("📊 Chart Data", expanded=True):
+                selected_idx = 0
+                if len(chart_data) > 1:
+                    options = list(range(len(chart_data)))
+                    def _label(i: int) -> str:
+                        it = chart_data[i] if i < len(chart_data) else {}
+                        if not isinstance(it, dict):
+                            return f"Chart {i + 1}"
+                        t = str(it.get("title") or "").strip()
+                        typ = str(it.get("type") or "").strip()
+                        return f"{i + 1}. {t or 'Untitled'}{f' ({typ})' if typ else ''}"
+
+                it = chart_data[0] if len(chart_data) else {}
+                if isinstance(it, dict):
+                    title = str(it.get("title") or "").strip()
+                    typ = str(it.get("type") or "").strip()
+                    insight = str(it.get("insight") or "").strip()
+
+                    chrt_1, chrt_2 = st.columns([5,2])
+                    with chrt_1:
+                        if title:
+                            st.caption("**Chart Title**")
+                            st.code(title, language=None, wrap_lines=True)
+                    with chrt_2:
+                        if typ:
+                            st.caption("**Chart type**")
+                            st.code(typ, language=None, wrap_lines=True)
+                    if insight:
+                        st.caption(f"**Insight text**")
+                        st.code(insight, language=None, wrap_lines=True)
+
+                    raw = it.get("data")
+                    if isinstance(raw, list) and raw and all(isinstance(r, dict) for r in raw):
+                        st.caption("**Raw data**")
+                        st.dataframe(pd.DataFrame(raw), hide_index=True, width="stretch")
+                    else:
+                        st.caption("No chart `data` found.")
 
         # Helper info expander (collapsed by default)
         aois = row.get("aois") or []
