@@ -37,21 +37,36 @@ def get_gemini_model_options(api_key: str, cache_key: str = "gemini_model_option
         return (out[0], out[1], out[2])
 
     try:
-        from google import genai
-
-        client = genai.Client(api_key=api_key)
         models: list[str] = []
 
-        for m in client.models.list():
-            name = getattr(m, "name", None)
-            if not isinstance(name, str) or not name.strip():
-                continue
-            cleaned = name.replace("models/", "")
-            if not cleaned.startswith("gemini-"):
-                continue
-            if "image" in cleaned.lower():
-                continue
-            models.append(cleaned)
+        try:
+            from google import genai as _genai  # google-genai
+
+            client = _genai.Client(api_key=api_key)
+            for m in client.models.list():
+                name = getattr(m, "name", None)
+                if not isinstance(name, str) or not name.strip():
+                    continue
+                cleaned = name.replace("models/", "")
+                if not cleaned.startswith("gemini-"):
+                    continue
+                if "image" in cleaned.lower():
+                    continue
+                models.append(cleaned)
+        except Exception:
+            import google.generativeai as _genai  # google-generativeai
+
+            _genai.configure(api_key=api_key)
+            for m in _genai.list_models():
+                name = getattr(m, "name", None)
+                if not isinstance(name, str) or not name.strip():
+                    continue
+                cleaned = name.replace("models/", "")
+                if not cleaned.startswith("gemini-"):
+                    continue
+                if "image" in cleaned.lower():
+                    continue
+                models.append(cleaned)
 
         models = sorted(set(models), key=lambda n: _parse_version(n), reverse=True)
         st.session_state[cache_key] = models if models else fallback
@@ -111,11 +126,19 @@ def call_gemini(api_key: str, model_name: str, prompt: str) -> str:
     Returns:
         The text response from the model, or empty string on error
     """
-    from google import genai
+    try:
+        from google import genai as _genai  # google-genai
 
-    client = genai.Client(api_key=api_key)
-    resp = client.models.generate_content(
-        model=model_name,
-        contents=prompt,
-    )
-    return str(getattr(resp, "text", "") or "")
+        client = _genai.Client(api_key=api_key)
+        resp = client.models.generate_content(
+            model=model_name,
+            contents=prompt,
+        )
+        return str(getattr(resp, "text", "") or "")
+    except Exception:
+        import google.generativeai as _genai  # google-generativeai
+
+        _genai.configure(api_key=api_key)
+        model = _genai.GenerativeModel(model_name)
+        resp = model.generate_content(prompt)
+        return str(getattr(resp, "text", "") or "")
