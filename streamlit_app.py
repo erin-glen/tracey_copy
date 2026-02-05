@@ -29,6 +29,7 @@ Quickly pull and explore traces from Langfuse. _Ta, Trace!_
 |------|-------------|
 | 📊 **Analytics** | Overview charts, metrics, and reports |
 | ✅ **Human Eval** | Sample and rate traces for quality evaluation |
+| 📈 **Eval Insights** | A simple dashboard of human evaluation results |
 | 🧠 **Product Intelligence** | AI-powered insights and pattern discovery |
 | 🔎 **Trace Explorer** | Browse and filter individual traces |
 | 🔗 **Conversation Browser** | View full conversation threads |

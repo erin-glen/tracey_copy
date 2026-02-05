@@ -229,12 +229,14 @@ section[data-testid="stSidebar"] div[data-testid="stDownloadButton"] button:hove
                 value=os.getenv("LANGFUSE_BASE_URL", ""),
                 key="langfuse_base_url_input",
             )
-            gemini_api_key = st.text_input(
-                "GEMINI_API_KEY",
-                value=os.getenv("GEMINI_API_KEY", os.getenv("GOOGLE_API_KEY", "")),
+            gemini_override = st.text_input(
+                "BYO GEMINI_API_KEY (_optional_)",
+                value="",
                 type="password",
-                key="gemini_api_key_input",
+                key="gemini_api_key_override_input",
+                help="If left blank, Tracey will use GEMINI_API_KEY (or GOOGLE_API_KEY) from the environment.",
             )
+            gemini_api_key = str(gemini_override or st.session_state.get("gemini_api_key") or os.getenv("GEMINI_API_KEY", os.getenv("GOOGLE_API_KEY", "")))
 
         with st.expander("⚠️ Limits", expanded=False):
             stats_page_limit = st.number_input(
