@@ -223,12 +223,7 @@ section[data-testid="stSidebar"] div[data-testid="stDownloadButton"] button:hove
                 value=os.getenv("LANGFUSE_PUBLIC_KEY", ""),
                 key="langfuse_public_key_input",
             )
-            secret_key = st.text_input(
-                "LANGFUSE_SECRET_KEY",
-                value=os.getenv("LANGFUSE_SECRET_KEY", ""),
-                type="password",
-                key="langfuse_secret_key_input",
-            )
+            secret_key = str(st.session_state.get("langfuse_secret_key") or os.getenv("LANGFUSE_SECRET_KEY", ""))
             base_url = st.text_input(
                 "LANGFUSE_BASE_URL",
                 value=os.getenv("LANGFUSE_BASE_URL", ""),
