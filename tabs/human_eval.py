@@ -1,7 +1,6 @@
 """Human evaluation sampling tab."""
 
 import json
-import random
 import time
 import hashlib
 import threading
@@ -27,9 +26,15 @@ from utils import (
     normalize_trace_format,
     current_human_prompt,
     current_turn_ai_message,
+    slice_output_to_current_turn,
     csv_bytes_any,
     init_session_state,
     extract_trace_context,
+    compute_derived_interactions,
+    SAMPLE_PRESETS,
+    build_preset_mask,
+    apply_candidate_filters,
+    sample_trace_ids,
     get_gemini_model_options,
     truncate_text,
     parse_json_any,
@@ -209,6 +214,11 @@ def render(
         "human_eval_project_id": "",
         "human_eval_pending_warning": "",
         "human_eval_pending_toast": "",
+        "human_eval_kpis_fingerprint": "",
+        "human_eval_kpis_df": None,
+        "human_eval_sampling_preset": "random",
+        "human_eval_sampling_stratify": False,
+        "human_eval_sampling_one_per_thread": True,
     })
 
     headers = get_langfuse_headers(public_key, secret_key) if public_key and secret_key else {}
@@ -256,8 +266,9 @@ def render(
                 if isinstance(it, dict):
                     out.append(it)
 
+        out_msgs = slice_output_to_current_turn(trace)
         for msgs in [
-            ((trace.get("output") or {}).get("messages") or []),
+            out_msgs,
             ((trace.get("input") or {}).get("messages") or []),
         ]:
             for m in msgs:
@@ -290,6 +301,30 @@ def render(
         return f"{model_name}||{criteria.strip()}"
 
     traces: list[dict[str, Any]] = st.session_state.get("stats_traces", [])
+
+    trace_by_id: dict[str, dict[str, Any]] = {}
+    for t in traces:
+        try:
+            n = normalize_trace_format(t)
+            tid = str(n.get("id") or "").strip()
+            if tid:
+                trace_by_id[tid] = n
+        except Exception:
+            continue
+
+    def _ensure_kpis_df() -> pd.DataFrame:
+        if not trace_by_id:
+            return pd.DataFrame()
+        joined = "|".join(sorted(trace_by_id.keys()))
+        fingerprint = hashlib.sha256(joined.encode("utf-8")).hexdigest()
+        cached_fp = str(st.session_state.get("human_eval_kpis_fingerprint") or "")
+        cached_df = st.session_state.get("human_eval_kpis_df")
+        if fingerprint != cached_fp or not isinstance(cached_df, pd.DataFrame):
+            derived = compute_derived_interactions(list(trace_by_id.values()))
+            st.session_state.human_eval_kpis_df = derived
+            st.session_state.human_eval_kpis_fingerprint = fingerprint
+            return derived
+        return cached_df
 
     if not traces:
         st.info(
@@ -853,54 +888,169 @@ def render(
             if not ready:
                 st.warning("Complete steps 1-2 to enable sampling.")
 
+            criteria = str(st.session_state.get("human_eval_filter_criteria", "") or "")
+            model_name = str(st.session_state.get("human_eval_filter_model", "") or "")
+            filter_active = bool(criteria.strip())
+            criteria_key = _criteria_key(model_name, criteria) if filter_active else ""
+            cache = st.session_state.get("human_eval_filter_cache", {})
+            allow_ids: set[str] | None = None
+            if filter_active and isinstance(cache, dict):
+                allow_ids = {
+                    str(tid).strip()
+                    for tid, entry in cache.items()
+                    if isinstance(entry, dict)
+                    and str(tid).strip()
+                    and entry.get("criteria_key") == criteria_key
+                    and entry.get("match") is True
+                }
+
+            with st.expander("🎯 Targeted sampling (Deterministic)", expanded=False):
+                preset_options = list(SAMPLE_PRESETS.keys())
+                current_preset = str(st.session_state.get("human_eval_sampling_preset") or "random")
+                if current_preset not in preset_options:
+                    current_preset = "random"
+                preset_idx = preset_options.index(current_preset)
+                preset_id = st.selectbox(
+                    "Sampling preset",
+                    options=preset_options,
+                    index=preset_idx,
+                    key="human_eval_sampling_preset",
+                    format_func=lambda pid: SAMPLE_PRESETS.get(pid, {}).get("label", pid),
+                )
+                st.caption(SAMPLE_PRESETS.get(preset_id, {}).get("description", ""))
+
+                default_stratify = preset_id == "balanced_scored_intents"
+                st.checkbox(
+                    "Balance across intents",
+                    value=bool(st.session_state.get("human_eval_sampling_stratify", default_stratify) or default_stratify),
+                    key="human_eval_sampling_stratify",
+                    help="Stratifies by intent_primary.",
+                )
+                st.checkbox(
+                    "One per thread/session",
+                    value=bool(st.session_state.get("human_eval_sampling_one_per_thread", True)),
+                    key="human_eval_sampling_one_per_thread",
+                )
+
+                df_for_preview = _ensure_kpis_df()
+                if isinstance(df_for_preview, pd.DataFrame) and not df_for_preview.empty:
+                    mask = build_preset_mask(df_for_preview, preset_id)
+                    df_candidates = df_for_preview.loc[mask].copy()
+
+                    all_opt = ["All"]
+                    intent_opts = all_opt + sorted({v for v in df_for_preview.get("intent_primary", pd.Series(dtype=str)).fillna("").astype(str) if v})
+                    completion_opts = all_opt + sorted({v for v in df_for_preview.get("completion_state", pd.Series(dtype=str)).fillna("").astype(str) if v})
+                    dataset_opts = all_opt + sorted({v for v in df_for_preview.get("dataset_family", pd.Series(dtype=str)).fillna("").astype(str) if v})
+                    answer_opts = all_opt + sorted({v for v in df_for_preview.get("answer_type", pd.Series(dtype=str)).fillna("").astype(str) if v})
+
+                    c1, c2, c3 = st.columns(3)
+                    with c1:
+                        filt_intent = st.selectbox("intent_primary", options=intent_opts, key="human_eval_filter_intent_primary")
+                    with c2:
+                        filt_completion = st.selectbox("completion_state", options=completion_opts, key="human_eval_filter_completion_state")
+                    with c3:
+                        filt_dataset = st.selectbox("dataset_family", options=dataset_opts, key="human_eval_filter_dataset_family")
+
+                    c4, c5 = st.columns(2)
+                    with c4:
+                        filt_answer = st.selectbox("answer_type", options=answer_opts, key="human_eval_filter_answer_type")
+                    with c5:
+                        filt_codeact = st.selectbox("codeact_present", options=["All", "Yes", "No"], key="human_eval_filter_codeact_present")
+
+                    show_reason = (filt_completion == "needs_user_input") or (preset_id == "needs_user_input")
+                    filt_reason = "All"
+                    if show_reason:
+                        reason_opts = all_opt + sorted({v for v in df_for_preview.get("needs_user_input_reason", pd.Series(dtype=str)).fillna("").astype(str) if v})
+                        filt_reason = st.selectbox("needs_user_input_reason", options=reason_opts, key="human_eval_filter_needs_reason")
+
+                    df_candidates = apply_candidate_filters(
+                        df_candidates,
+                        intent=filt_intent,
+                        completion_state=filt_completion,
+                        needs_reason=filt_reason,
+                        dataset_family=filt_dataset,
+                        answer_type=filt_answer,
+                        codeact_present=filt_codeact,
+                        trace_ids_allowlist=allow_ids,
+                    )
+
+                    st.caption(f"Candidates: {len(df_candidates):,} / total derived: {len(df_for_preview):,}")
+                    group_preview = (
+                        df_candidates.groupby(["intent_primary", "completion_state"], dropna=False)
+                        .size()
+                        .reset_index(name="count")
+                        .sort_values("count", ascending=False)
+                        .head(10)
+                    )
+                    if not group_preview.empty:
+                        st.dataframe(group_preview, hide_index=True, width="stretch")
+
             if st.button(
                 "🎲 Sample traces and add to queue",
                 type="primary",
                 disabled=not bool(name_ok and ready),
                 help="Enter a reviewer name above to enable sampling.",
             ):
-                normed: list[dict[str, Any]] = []
+                if filter_active and (not allow_ids):
+                    st.warning(
+                        "Filter criteria is set, but there are no matching classified traces yet. "
+                        "Run the Gemini filter (or increase 'Max traces to classify') before sampling."
+                    )
+                    return
 
-                criteria = str(st.session_state.get("human_eval_filter_criteria", "") or "")
-                model_name = str(st.session_state.get("human_eval_filter_model", "") or "")
-                filter_active = bool(criteria.strip())
-                criteria_key = _criteria_key(model_name, criteria) if filter_active else ""
-                cache = st.session_state.get("human_eval_filter_cache", {})
+                df = _ensure_kpis_df()
+                if df.empty:
+                    st.warning("No derived KPI rows available for sampling.")
+                    return
 
-                if filter_active:
-                    if not isinstance(cache, dict) or not any(
-                        isinstance(v, dict)
-                        and v.get("criteria_key") == criteria_key
-                        and v.get("match") is True
-                        for v in cache.values()
-                    ):
-                        st.warning(
-                            "Filter criteria is set, but there are no matching classified traces yet. "
-                            "Run the Gemini filter (or increase 'Max traces to classify') before sampling."
-                        )
-                        return
+                preset_id = str(st.session_state.get("human_eval_sampling_preset") or "random")
+                mask = build_preset_mask(df, preset_id)
+                df_candidates = df.loc[mask].copy()
 
-                for t in traces:
-                    n = normalize_trace_format(t)
-                    prompt = current_human_prompt(n)
-                    answer = current_turn_ai_message(n)
-                    if not prompt or not answer:
+                filt_intent = st.session_state.get("human_eval_filter_intent_primary", "All")
+                filt_completion = st.session_state.get("human_eval_filter_completion_state", "All")
+                filt_reason = st.session_state.get("human_eval_filter_needs_reason", "All")
+                filt_dataset = st.session_state.get("human_eval_filter_dataset_family", "All")
+                filt_answer = st.session_state.get("human_eval_filter_answer_type", "All")
+                filt_codeact = st.session_state.get("human_eval_filter_codeact_present", "All")
+
+                df_candidates = apply_candidate_filters(
+                    df_candidates,
+                    intent=filt_intent,
+                    completion_state=filt_completion,
+                    needs_reason=filt_reason,
+                    dataset_family=filt_dataset,
+                    answer_type=filt_answer,
+                    codeact_present=filt_codeact,
+                    trace_ids_allowlist=allow_ids,
+                )
+
+                stratify_col = "intent_primary" if bool(st.session_state.get("human_eval_sampling_stratify")) else None
+                selected_trace_ids = sample_trace_ids(
+                    df_candidates,
+                    n=int(sample_size),
+                    seed=int(random_seed),
+                    stratify_col=stratify_col,
+                    one_per_thread=bool(st.session_state.get("human_eval_sampling_one_per_thread", True)),
+                )
+
+                selected_rows = df.set_index("trace_id") if "trace_id" in df.columns else pd.DataFrame()
+                sampled: list[dict[str, Any]] = []
+                for tid in selected_trace_ids:
+                    trace = trace_by_id.get(str(tid))
+                    if not isinstance(trace, dict):
                         continue
-
-                    if filter_active and criteria.strip():
-                        tid = str(n.get("id") or "")
-                        entry = cache.get(tid) if isinstance(cache, dict) and tid else None
-                        if not (isinstance(entry, dict) and entry.get("criteria_key") == criteria_key and entry.get("match") is True):
-                            continue
-
-                    helper_info = extract_trace_context(n)
-                    chart_data = _extract_chart_data(n)
-                    normed.append(
+                    prompt = current_human_prompt(trace)
+                    answer = current_turn_ai_message(trace)
+                    helper_info = extract_trace_context(trace)
+                    chart_data = _extract_chart_data(trace)
+                    drow = selected_rows.loc[tid] if (not selected_rows.empty and tid in selected_rows.index) else None
+                    sampled.append(
                         {
-                            "trace_id": n.get("id"),
-                            "timestamp": n.get("timestamp"),
-                            "session_id": n.get("sessionId"),
-                            "environment": n.get("environment"),
+                            "trace_id": trace.get("id"),
+                            "timestamp": trace.get("timestamp"),
+                            "session_id": trace.get("sessionId"),
+                            "environment": trace.get("environment"),
                             "prompt": prompt,
                             "answer": answer,
                             "aois": helper_info.get("aois", []),
@@ -913,12 +1063,20 @@ def render(
                             "aoi_name": helper_info.get("aoi_name", ""),
                             "aoi_type": helper_info.get("aoi_type", ""),
                             "filter_match": True if filter_active and criteria.strip() else False,
+                            "sample_preset": preset_id,
+                            "intent_primary": "" if drow is None else str(drow.get("intent_primary") or ""),
+                            "completion_state": "" if drow is None else str(drow.get("completion_state") or ""),
+                            "needs_user_input_reason": "" if drow is None else str(drow.get("needs_user_input_reason") or ""),
+                            "struct_fail_reason": "" if drow is None else str(drow.get("struct_fail_reason") or ""),
+                            "dataset_name": "" if drow is None else str(drow.get("dataset_name") or ""),
+                            "dataset_family": "" if drow is None else str(drow.get("dataset_family") or ""),
+                            "answer_type": "" if drow is None else str(drow.get("answer_type") or ""),
+                            "codeact_present": False if drow is None else bool(drow.get("codeact_present") or False),
+                            "codeact_code_blocks_count": 0 if drow is None else int(drow.get("codeact_code_blocks_count") or 0),
                         }
                     )
 
-                rng = random.Random(int(random_seed))
-                rng.shuffle(normed)
-                st.session_state.human_eval_samples = normed[: int(sample_size)]
+                st.session_state.human_eval_samples = sampled
                 st.session_state.human_eval_index = 0
                 st.session_state.human_eval_annotations = {}
                 st.session_state.human_eval_started_at = time.time()
@@ -945,8 +1103,7 @@ def render(
                         st.session_state.get("human_eval_queue_description") or ""
                     ).strip()
 
-                    selected_samples = st.session_state.human_eval_samples
-                    trace_ids = [str(r.get("trace_id") or "").strip() for r in selected_samples if r.get("trace_id")]
+                    trace_ids = [str(r.get("trace_id") or "").strip() for r in sampled if r.get("trace_id")]
                     trace_ids = [t for t in trace_ids if t]
                     if trace_ids:
                         prog = st.progress(0.0, text="Adding sampled traces to annotation queue...")
@@ -971,6 +1128,7 @@ def render(
                 st.rerun()
 
             st.info("Click the button above to create a shuffled sample from the shared traces.")
+
             return
 
     trace_ids = [str(r.get("trace_id") or "") for r in samples if r.get("trace_id")]
@@ -1000,6 +1158,15 @@ def render(
                 "notes": str(ann.get("notes") or ""),
                 "timestamp": str(r.get("timestamp") or ""),
                 "url": f"{base_thread_url.rstrip('/')}/{r.get('session_id')}" if r.get("session_id") else "",
+                "sample_preset": str(r.get("sample_preset") or ""),
+                "intent_primary": str(r.get("intent_primary") or ""),
+                "completion_state": str(r.get("completion_state") or ""),
+                "needs_user_input_reason": str(r.get("needs_user_input_reason") or ""),
+                "struct_fail_reason": str(r.get("struct_fail_reason") or ""),
+                "dataset_family": str(r.get("dataset_family") or ""),
+                "dataset_name": str(r.get("dataset_name") or ""),
+                "answer_type": str(r.get("answer_type") or ""),
+                "codeact_present": bool(r.get("codeact_present") or False),
             }
         )
 
@@ -1163,7 +1330,7 @@ def render(
         has_helper_info = aois or datasets or datasets_analysed or tools_used or pull_data_calls or aoi_name or aoi_type
         if has_helper_info:
             with st.expander("📋 Context Helper", expanded=False):
-                st.info("Note: context is pulled from the entire conversation history.")
+                st.info("Note: context is extracted from the CURRENT TURN (sliced output messages).")
                 cols = st.columns(3)
                 with cols[0]:
                     st.caption("**AOI selected**")
@@ -1174,6 +1341,19 @@ def render(
                 with cols[2]:
                     st.caption("**Tools Selected**")
                     st.write(", ".join(tools_used) if tools_used else "—")
+
+                st.caption("Deterministic KPIs")
+                st.write(f"intent_primary: {str(row.get('intent_primary') or '—')}")
+                st.write(f"completion_state: {str(row.get('completion_state') or '—')}")
+                if str(row.get('needs_user_input_reason') or '').strip():
+                    st.write(f"needs_user_input_reason: {str(row.get('needs_user_input_reason') or '')}")
+                if str(row.get('struct_fail_reason') or '').strip():
+                    st.write(f"struct_fail_reason: {str(row.get('struct_fail_reason') or '')}")
+                st.write(
+                    f"dataset_family / dataset_name: {str(row.get('dataset_family') or '—')} / {str(row.get('dataset_name') or '—')}"
+                )
+                st.write(f"answer_type: {str(row.get('answer_type') or '—')}")
+                st.write(f"codeact_present: {bool(row.get('codeact_present') or False)}")
 
                 if pull_data_calls:
                     st.caption("**pull_data calls**", help="")
