@@ -25,8 +25,8 @@ from utils import (
     create_score,
     delete_score,
     normalize_trace_format,
-    first_human_prompt,
-    final_ai_message,
+    current_human_prompt,
+    current_turn_ai_message,
     csv_bytes_any,
     init_session_state,
     extract_trace_context,
@@ -485,8 +485,8 @@ def render(
                         tid = str(it.get("objectId") or "").strip()
                         status = str(it.get("status") or "").strip()
                         n = trace_by_id.get(tid)
-                        prompt = truncate_text(first_human_prompt(n) if n else "", 220)
-                        answer = truncate_text(final_ai_message(n) if n else "", 220)
+                        prompt = truncate_text(current_human_prompt(n) if n else "", 220)
+                        answer = truncate_text(current_turn_ai_message(n) if n else "", 220)
                         rows.append({"status": status, "prompt": prompt, "answer": answer})
 
                     completed_items = len(
@@ -605,8 +605,8 @@ def render(
                             except Exception:
                                 n = None
                         if n is not None:
-                            prompt = first_human_prompt(n)
-                            answer = final_ai_message(n)
+                            prompt = current_human_prompt(n)
+                            answer = current_turn_ai_message(n)
                             if prompt and answer:
                                 helper_info = extract_trace_context(n)
                                 chart_data = _extract_chart_data(n)
@@ -784,7 +784,7 @@ def render(
                                     progress.progress(min(1.0, scanned / max(1, int(max_to_classify))))
                                 continue
 
-                            prompt_txt = first_human_prompt(n)
+                            prompt_txt = current_human_prompt(n)
                             if not prompt_txt.strip():
                                 cache[tid] = {
                                     "criteria_key": key,
@@ -830,7 +830,7 @@ def render(
                             evaluated += 1
                             if entry.get("match") is True:
                                 matches += 1
-                                prompt_txt = first_human_prompt(n)
+                                prompt_txt = current_human_prompt(n)
                                 matched_rows.append(
                                     {
                                         "trace_id": tid,
@@ -882,8 +882,8 @@ def render(
 
                 for t in traces:
                     n = normalize_trace_format(t)
-                    prompt = first_human_prompt(n)
-                    answer = final_ai_message(n)
+                    prompt = current_human_prompt(n)
+                    answer = current_turn_ai_message(n)
                     if not prompt or not answer:
                         continue
 
@@ -1225,7 +1225,7 @@ def render(
             st.metric("🔥", streak if streak > 0 else "-")
 
         st.caption(_get_encouragement(progress))
-        
+
         nav_c1, nav_c2, nav_c3 = st.columns(3)
         with nav_c1:
             if st.button("⬅️ Prev", disabled=(idx <= 0), width="stretch"):

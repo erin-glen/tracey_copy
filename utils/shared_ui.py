@@ -13,8 +13,8 @@ from utils.data_helpers import maybe_load_dotenv, iso_utc, csv_bytes_any, init_s
 from utils.langfuse_api import fetch_traces_window, get_langfuse_headers
 from utils.trace_parsing import (
     normalize_trace_format,
-    first_human_prompt,
-    final_ai_message,
+    current_human_prompt,
+    current_turn_ai_message,
     parse_trace_dt,
     classify_outcome,
 )
@@ -29,7 +29,7 @@ def configure_page(title: str = "Tracey", layout: str = "wide") -> None:
 def check_authentication() -> bool:
     """Check if user is authenticated. Returns True if authenticated or no password required."""
     maybe_load_dotenv()
-    
+
     app_password = os.getenv("APP_PASSWORD", "")
     if "app_authenticated" not in st.session_state:
         st.session_state.app_authenticated = False
@@ -49,7 +49,7 @@ def check_authentication() -> bool:
                 else:
                     st.error("Incorrect password")
         return False
-    
+
     return True
 
 
@@ -87,7 +87,7 @@ def render_sidebar() -> dict[str, Any]:
             "use_date_filter": True,
         }
     )
-    
+
     with st.sidebar:
         if app_password and st.session_state.get("app_authenticated"):
             if st.button("Log out", width="stretch"):
@@ -211,8 +211,8 @@ section[data-testid="stSidebar"] div[data-testid="stDownloadButton"] button:hove
                 normed_for_dl = [normalize_trace_format(t) for t in traces_for_dl]
                 out_rows = []
                 for n in normed_for_dl:
-                    prompt = first_human_prompt(n)
-                    answer = final_ai_message(n)
+                    prompt = current_human_prompt(n)
+                    answer = current_turn_ai_message(n)
                     dt = parse_trace_dt(n)
                     out_rows.append({
                         "trace_id": n.get("id"),

@@ -3,6 +3,12 @@ from typing import Any
 
 import streamlit as st
 
+from utils import (
+    normalize_trace_format,
+    current_human_prompt,
+    slice_output_to_current_turn,
+)
+
 
 def _as_dict(x: Any) -> dict[str, Any]:
     return x if isinstance(x, dict) else {}
@@ -56,42 +62,6 @@ def _first_user_prompt_snippet(t: dict[str, Any], max_len: int = 80) -> str:
     return ""
 
 
-def _current_user_prompt(t: dict[str, Any]) -> str:
-    input_msgs = _as_list(_as_dict(t.get("input")).get("messages"))
-    for m in reversed(input_msgs):
-        md = _as_dict(m)
-        if str(md.get("type") or "") != "human":
-            continue
-        text = _content_text(md.get("content")).strip()
-        if text:
-            return text
-    return ""
-
-
-def _slice_output_to_current_turn(trace: dict[str, Any], output_msgs: list[Any]) -> list[Any]:
-    """Return output messages starting from the current (last) human prompt.
-
-    Some traces include full conversation history in output.messages. For debugging the current
-    trace turn, we slice from the last occurrence of the current user prompt.
-    """
-    cur = _current_user_prompt(trace)
-    if not cur:
-        return output_msgs
-
-    start_idx: int | None = None
-    for i, m in enumerate(output_msgs):
-        md = _as_dict(m)
-        if str(md.get("type") or "") != "human":
-            continue
-        text = _content_text(md.get("content")).strip()
-        if text == cur:
-            start_idx = i
-
-    if start_idx is None:
-        return output_msgs
-    return output_msgs[start_idx:]
-
-
 def _trace_label(t: dict[str, Any]) -> str:
     snippet = _first_user_prompt_snippet(t)
     if snippet:
@@ -126,7 +96,7 @@ def render(base_thread_url: str) -> None:
         hide_empty = st.checkbox("Hide empty messages", value=True, key="trace_explorer_hide_empty")
         show_raw = st.checkbox("Show raw JSON", value=False, key="trace_explorer_show_raw")
 
-    trace = traces[int(idx)]
+    trace = normalize_trace_format(traces[int(idx)])
     trace_clean = _strip_noise(trace)
 
     tid = str(trace.get("id") or "")
@@ -147,14 +117,14 @@ def render(base_thread_url: str) -> None:
         st.metric("Observations", str(len(obs)) if isinstance(obs, list) else "")
 
     st.markdown("### Input messages")
-    current_prompt = _current_user_prompt(trace)
+    current_prompt = current_human_prompt(trace)
     if not current_prompt:
         st.info("No input.messages")
     else:
         st.code(current_prompt, language=None)
 
     output_msgs_all = _as_list(_as_dict(trace.get("output")).get("messages"))
-    output_msgs = _slice_output_to_current_turn(trace, output_msgs_all)
+    output_msgs = slice_output_to_current_turn(trace, output_msgs_all)
 
     with st.expander("### Tool calls", expanded=False):
         tool_results_by_call_id: dict[str, dict[str, Any]] = {}

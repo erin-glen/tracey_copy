@@ -16,8 +16,8 @@ from utils.prompt_fixtures import (
 
 from utils import (
     normalize_trace_format,
-    first_human_prompt,
-    final_ai_message,
+    current_human_prompt,
+    current_turn_ai_message,
     csv_bytes_any,
     get_gemini_model_options,
     chunked,
@@ -47,8 +47,8 @@ def _normalize_rows(traces: list[dict[str, Any]], limit: int = 500) -> list[dict
     out: list[dict[str, Any]] = []
     for t in traces:
         n = normalize_trace_format(t)
-        prompt = first_human_prompt(n)
-        answer = final_ai_message(n)
+        prompt = current_human_prompt(n)
+        answer = current_turn_ai_message(n)
         if not prompt and not answer:
             continue
         out.append(
