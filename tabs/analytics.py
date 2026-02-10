@@ -15,6 +15,8 @@ from utils import (
     first_human_prompt,
     final_ai_message,
     classify_outcome,
+    active_turn_prompt,
+    active_turn_answer,
     fetch_user_first_seen,
     invalidate_user_first_seen_cache,
     extract_trace_context,
@@ -112,8 +114,8 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
 
     rows: list[dict[str, Any]] = []
     for n in normed:
-        prompt = first_human_prompt(n)
-        answer = final_ai_message(n)
+        prompt = active_turn_prompt(n) or first_human_prompt(n)
+        answer = active_turn_answer(n) or final_ai_message(n)
         dt = parse_trace_dt(n)
         outcome = classify_outcome(n, answer or "")
 

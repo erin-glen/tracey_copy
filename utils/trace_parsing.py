@@ -116,6 +116,109 @@ def _msg_text(content: Any) -> str:
     return ""
 
 
+def _mtype(m: dict[str, Any]) -> str:
+    t = (m.get("type") or m.get("role") or "").lower()
+    return {"assistant": "ai", "user": "human"}.get(t, t)
+
+
+def _stop_reason(m: dict[str, Any]) -> str:
+    meta = m.get("response_metadata") or {}
+    sr = (
+        meta.get("stop_reason")
+        or meta.get("finish_reason")
+        or m.get("stop_reason")
+        or m.get("finish_reason")
+        or ""
+    )
+    return str(sr).lower()
+
+
+def _get_msg_content(m: dict[str, Any]) -> str:
+    c = m.get("content")
+    if isinstance(c, str):
+        return c
+    if isinstance(c, list):
+        out: list[str] = []
+        for x in c:
+            if isinstance(x, str):
+                out.append(x)
+            elif isinstance(x, dict):
+                if isinstance(x.get("text"), str):
+                    out.append(str(x.get("text") or ""))
+                elif isinstance(x.get("content"), str):
+                    out.append(str(x.get("content") or ""))
+        return " ".join([o for o in out if o])
+    if isinstance(c, dict):
+        return str(c.get("text") or c.get("content") or "")
+    return ""
+
+
+def _is_meaningful_human(text: str) -> bool:
+    if not text or not text.strip():
+        return False
+    t = text.strip().lower()
+    prefixes = (
+        "user selected",
+        "user clicked",
+        "user chose",
+        "user set",
+        "user changed",
+        "user uploaded",
+        "user drew",
+        "user toggled",
+        "selected aoi",
+        "selected dataset",
+        "user selected aoi",
+    )
+    if t.startswith(prefixes):
+        return False
+    return any(ch.isalnum() for ch in text)
+
+
+def _find_active_turn_window(msgs: list[dict[str, Any]]) -> tuple[int | None, int | None]:
+    if not msgs:
+        return None, None
+
+    end_idxs: list[int] = []
+    for i, m in enumerate(msgs):
+        if _mtype(m) != "ai":
+            continue
+
+        sr = _stop_reason(m)
+        if sr == "end_turn":
+            end_idxs.append(i)
+            continue
+
+        if sr == "stop":
+            next_idx = i + 1
+            if next_idx >= len(msgs):
+                end_idxs.append(i)
+            elif _mtype(msgs[next_idx]) == "human":
+                end_idxs.append(i)
+
+    if not end_idxs:
+        start: int | None = None
+        for j in range(len(msgs) - 1, -1, -1):
+            if _mtype(msgs[j]) == "human" and _is_meaningful_human(_get_msg_content(msgs[j])):
+                start = j
+                break
+        return start, None
+
+    end = end_idxs[-1]
+    prev_end = end_idxs[-2] if len(end_idxs) > 1 else -1
+
+    start: int | None = None
+    for j in range(end - 1, prev_end, -1):
+        if _mtype(msgs[j]) == "human" and _is_meaningful_human(_get_msg_content(msgs[j])):
+            start = j
+            break
+
+    if start is None:
+        start = prev_end + 1 if prev_end + 1 <= end else None
+
+    return start, end
+
+
 def first_human_prompt(row: dict[str, Any]) -> str:
     """Extract the first human message from a trace's input."""
     msgs = (((row.get("input") or {}).get("messages")) or [])
@@ -125,6 +228,18 @@ def first_human_prompt(row: dict[str, Any]) -> str:
             if t and t.strip():
                 return t.strip()
     return ""
+
+
+def active_turn_prompt(row: dict[str, Any]) -> str:
+    msgs = (((row.get("output") or {}).get("messages")) or [])
+    start_idx, _ = _find_active_turn_window([m for m in msgs if isinstance(m, dict)])
+    if start_idx is None or not (0 <= start_idx < len(msgs)):
+        return ""
+    m = msgs[start_idx]
+    if not isinstance(m, dict) or _mtype(m) != "human":
+        return ""
+    t = _get_msg_content(m)
+    return t.strip() if isinstance(t, str) and t.strip() else ""
 
 
 def final_ai_message(row: dict[str, Any]) -> str:
@@ -138,9 +253,63 @@ def final_ai_message(row: dict[str, Any]) -> str:
     return ""
 
 
+def active_turn_answer(row: dict[str, Any]) -> str:
+    msgs = (((row.get("output") or {}).get("messages")) or [])
+    clean_msgs = [m for m in msgs if isinstance(m, dict)]
+    _, end_idx = _find_active_turn_window(clean_msgs)
+    if end_idx is None or not (0 <= end_idx < len(clean_msgs)):
+        return ""
+    m = clean_msgs[end_idx]
+    if _mtype(m) != "ai":
+        return ""
+    t = _get_msg_content(m)
+    return t.strip() if isinstance(t, str) and t.strip() else ""
+
+
 def trace_has_ai_message(row: dict[str, Any]) -> bool:
     msgs = (((row.get("output") or {}).get("messages")) or [])
     return any(isinstance(m, dict) and m.get("type") == "ai" for m in msgs)
+
+
+def active_turn_has_ai_message(row: dict[str, Any]) -> bool:
+    msgs = (((row.get("output") or {}).get("messages")) or [])
+    clean_msgs = [m for m in msgs if isinstance(m, dict)]
+    start_idx, end_idx = _find_active_turn_window(clean_msgs)
+    if start_idx is None:
+        return False
+    hi = end_idx if end_idx is not None else (len(clean_msgs) - 1)
+    for i in range(start_idx, hi + 1):
+        if _mtype(clean_msgs[i]) == "ai":
+            return True
+    return False
+
+
+def _message_has_error_status(m: dict[str, Any]) -> bool:
+    s = str(
+        m.get("status")
+        or (m.get("response", {}) or {}).get("status")
+        or (m.get("response_metadata") or {}).get("status")
+        or ""
+    ).lower()
+    lvl = str(
+        m.get("level")
+        or (m.get("response_metadata") or {}).get("level")
+        or ""
+    ).lower()
+    return ("error" in s) or (lvl == "error") or bool(m.get("error"))
+
+
+def active_turn_has_hard_error(row: dict[str, Any]) -> bool:
+    msgs = (((row.get("output") or {}).get("messages")) or [])
+    clean_msgs = [m for m in msgs if isinstance(m, dict)]
+    start_idx, end_idx = _find_active_turn_window(clean_msgs)
+    if start_idx is None:
+        return False
+    hi = end_idx if end_idx is not None else (len(clean_msgs) - 1)
+    for i in range(start_idx, hi + 1):
+        if _message_has_error_status(clean_msgs[i]):
+            return True
+    return False
 
 
 def looks_like_error_answer(text: str) -> bool:
@@ -149,7 +318,41 @@ def looks_like_error_answer(text: str) -> bool:
     if not t:
         return True
     needles = _load_error_answer_needles()
-    return any(n in t for n in needles)
+
+    for n in needles:
+        nn = (n or "").strip().lower()
+        if not nn:
+            continue
+        if any(ord(ch) > 127 for ch in nn):
+            if nn in t:
+                return True
+            continue
+        if re.search(r"\s", nn) or re.search(r"[^a-z0-9]", nn):
+            if nn in t:
+                return True
+            continue
+        if re.search(rf"\b{re.escape(nn)}\b", t):
+            return True
+    return False
+
+
+def active_turn_used_tools(row: dict[str, Any]) -> bool:
+    msgs = (((row.get("output") or {}).get("messages")) or [])
+    clean_msgs = [m for m in msgs if isinstance(m, dict)]
+    start_idx, end_idx = _find_active_turn_window(clean_msgs)
+    if start_idx is None:
+        return False
+    hi = end_idx if end_idx is not None else (len(clean_msgs) - 1)
+    for i in range(start_idx, hi + 1):
+        m = clean_msgs[i]
+        if _mtype(m) == "tool":
+            return True
+        if _mtype(m) == "ai" and isinstance(m.get("tool_calls"), list) and len(m.get("tool_calls") or []):
+            return True
+        ak = m.get("additional_kwargs") or {}
+        if isinstance(ak, dict) and isinstance(ak.get("function_call"), dict):
+            return True
+    return False
 
 
 def trace_used_tools(row: dict[str, Any]) -> bool:
@@ -160,11 +363,13 @@ def trace_used_tools(row: dict[str, Any]) -> bool:
 
 def classify_outcome(row: dict[str, Any], answer: str) -> str:
     """Classify the outcome of a trace based on answer content and tool usage."""
+    if active_turn_has_hard_error(row):
+        return "ERROR"
     if not answer.strip():
-        return "ERROR" if trace_has_ai_message(row) else "EMPTY"
+        return "ERROR" if active_turn_has_ai_message(row) else "EMPTY"
     if looks_like_error_answer(answer):
         return "SOFT_ERROR"
-    if not trace_used_tools(row):
+    if not active_turn_used_tools(row):
         return "DEFER"
     return "ANSWER"
 
