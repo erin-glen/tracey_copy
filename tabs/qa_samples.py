@@ -88,7 +88,7 @@ def render(public_key: str, secret_key: str, base_url: str, base_thread_url: str
         st.write(SAMPLE_PACKS[pack_id]["description"])
 
     pack_df = build_sample_pack_df(derived, pack_id, max_rows=max_rows)
-    if pack_id == "codeact_examples":
+    if pack_id in {"codeact_examples", "codeact_param_issues"}:
         pack_df = add_codeact_snippets_for_pack(pack_df, trace_by_id, max_chars=500)
 
     preset_id = SAMPLE_PACKS[pack_id]["preset_id"]

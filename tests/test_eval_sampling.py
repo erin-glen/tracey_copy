@@ -53,6 +53,16 @@ class TestEvalSampling(unittest.TestCase):
         model_errors = sorted(df.loc[build_preset_mask(df, "model_errors"), "trace_id"].tolist())
         self.assertEqual(model_errors, ["t2", "t3", "t4"])
 
+        df2 = pd.DataFrame(
+            [
+                {"trace_id": "c1", "intent_primary": "trend_over_time", "codeact_present": True, "codeact_consistency_issue": True},
+                {"trace_id": "c2", "intent_primary": "data_lookup", "codeact_present": True, "codeact_consistency_issue": False},
+                {"trace_id": "c3", "intent_primary": "other", "codeact_present": True, "codeact_consistency_issue": True},
+            ]
+        )
+        codeact_param_issues = df2.loc[build_preset_mask(df2, "codeact_param_issues"), "trace_id"].tolist()
+        self.assertEqual(codeact_param_issues, ["c1"])
+
     def test_deterministic_sampling(self):
         df = pd.DataFrame([{"trace_id": f"t{i}", "intent_primary": "A"} for i in range(20)])
         a = sample_trace_ids(df, n=8, seed=42)

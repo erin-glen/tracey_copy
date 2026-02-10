@@ -88,6 +88,20 @@ from utils.sample_packs import (
     build_sample_pack_df,
     add_codeact_snippets_for_pack,
 )
+from utils.codeact_utils import (
+    find_codeact_parts,
+    iter_decoded_codeact_parts,
+    redact_secrets,
+    truncate_text as codeact_truncate_text,
+)
+from utils.codeact_qaqc import (
+    normalize_code_for_template,
+    compute_codeact_template_id,
+    extract_code_param_signals,
+    evaluate_param_consistency,
+    add_codeact_qaqc_columns,
+    build_codeact_template_rollups,
+)
 
 from utils.eval_sampling import (
     SAMPLE_PRESETS,
@@ -177,6 +191,17 @@ __all__ = [
     "DEFAULT_SAMPLE_COLS",
     "build_sample_pack_df",
     "add_codeact_snippets_for_pack",
+    # CodeAct utils
+    "find_codeact_parts",
+    "iter_decoded_codeact_parts",
+    "redact_secrets",
+    "codeact_truncate_text",
+    "normalize_code_for_template",
+    "compute_codeact_template_id",
+    "extract_code_param_signals",
+    "evaluate_param_consistency",
+    "add_codeact_qaqc_columns",
+    "build_codeact_template_rollups",
     # Shared UI
     "check_authentication",
     "render_sidebar",

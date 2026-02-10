@@ -41,6 +41,10 @@ SAMPLE_PRESETS = {
         "label": "CodeAct examples",
         "description": "Rows with codeact present in scored intents.",
     },
+    "codeact_param_issues": {
+        "label": "CodeAct parameter issues",
+        "description": "Scored-intent CodeAct traces with deterministic parameter consistency issues.",
+    },
 }
 
 
@@ -106,6 +110,12 @@ def build_preset_mask(df: pd.DataFrame, preset_id: str) -> pd.Series:
         return completion == "needs_user_input"
     if preset_id == "codeact_examples":
         return codeact_present & intent.isin(["trend_over_time", "data_lookup"])
+    if preset_id == "codeact_param_issues":
+        consistency_issue = df.get("codeact_consistency_issue", False)
+        if not isinstance(consistency_issue, pd.Series):
+            consistency_issue = pd.Series([bool(consistency_issue)] * len(df), index=df.index, dtype=bool)
+        consistency_issue = consistency_issue.fillna(False).astype(bool)
+        return codeact_present & intent.isin(["trend_over_time", "data_lookup"]) & consistency_issue
 
     return pd.Series([True] * len(df), index=df.index, dtype=bool)
 
