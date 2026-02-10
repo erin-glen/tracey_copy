@@ -82,6 +82,13 @@ from utils.content_kpis import (
     build_content_slices,
     build_thread_summary,
 )
+from utils.sample_packs import (
+    SAMPLE_PACKS,
+    DEFAULT_SAMPLE_COLS,
+    build_sample_pack_df,
+    add_codeact_snippets_for_pack,
+)
+
 from utils.eval_sampling import (
     SAMPLE_PRESETS,
     build_preset_mask,
@@ -165,6 +172,11 @@ __all__ = [
     "build_preset_mask",
     "apply_candidate_filters",
     "sample_trace_ids",
+    # Sample packs
+    "SAMPLE_PACKS",
+    "DEFAULT_SAMPLE_COLS",
+    "build_sample_pack_df",
+    "add_codeact_snippets_for_pack",
     # Shared UI
     "check_authentication",
     "render_sidebar",
