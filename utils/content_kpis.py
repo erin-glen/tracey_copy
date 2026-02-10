@@ -477,6 +477,141 @@ def _pct(n: float, d: float) -> float:
     return float(n) / float(d)
 
 
+def compute_thread_key(df: pd.DataFrame) -> pd.Series:
+    """Build deterministic thread grouping keys with fallback priority.
+
+    Priority: thread_id -> sessionId -> trace_id -> synthetic row key.
+    """
+    if df.empty:
+        return pd.Series(dtype="string")
+
+    idx_series = pd.Series(df.index, index=df.index)
+
+    def _col(name: str) -> pd.Series:
+        if name in df.columns:
+            return df[name].fillna("").astype(str).str.strip()
+        return pd.Series("", index=df.index, dtype="string")
+
+    thread_id = _col("thread_id")
+    session_id = _col("sessionId")
+    trace_id = _col("trace_id")
+
+    thread_key = thread_id.where(thread_id != "", session_id)
+    thread_key = thread_key.where(thread_key != "", trace_id)
+    return thread_key.where(thread_key != "", idx_series.map(lambda x: f"row:{x}")).astype("string")
+
+
+def _unique_in_order(values: pd.Series, cap: int) -> tuple[int, str]:
+    seen: list[str] = []
+    for raw in values.fillna("").astype(str):
+        v = raw.strip()
+        if not v or v in seen:
+            continue
+        seen.append(v)
+
+    total = len(seen)
+    if total <= cap:
+        return total, ",".join(seen)
+    return total, ",".join(seen[:cap] + [f"+{total - cap} more"])
+
+
+def build_thread_summary(
+    derived: pd.DataFrame,
+    timestamp_col: str = "timestamp",
+    max_datasets: int = 5,
+    max_families: int = 5,
+) -> pd.DataFrame:
+    if derived.empty:
+        return pd.DataFrame(
+            columns=[
+                "thread_key",
+                "thread_id",
+                "sessionId",
+                "start_utc",
+                "end_utc",
+                "n_turns",
+                "first_intent_primary",
+                "last_intent_primary",
+                "ever_complete_answer",
+                "ever_needs_user_input",
+                "ever_error",
+                "ended_after_needs_user_input",
+                "ended_after_error",
+                "n_complete_answer",
+                "n_needs_user_input",
+                "n_error",
+                "datasets_seen_count",
+                "datasets_seen",
+                "dataset_families_seen_count",
+                "dataset_families_seen",
+                "needs_user_input_reasons",
+                "last_completion_state",
+                "last_needs_user_input_reason",
+            ]
+        )
+
+    df = derived.copy()
+    df["thread_key"] = compute_thread_key(df)
+    df["_ts"] = pd.to_datetime(df.get(timestamp_col), utc=True, errors="coerce")
+    df = df.sort_values(["thread_key", "_ts"], na_position="last")
+
+    summaries: list[dict[str, Any]] = []
+    for key, g in df.groupby("thread_key", sort=False):
+        group = g.sort_values("_ts", na_position="last")
+        last = group.iloc[-1]
+        first = group.iloc[0]
+
+        ts = group["_ts"].dropna()
+        start_utc = ts.min().isoformat() if len(ts) else ""
+        end_utc = ts.max().isoformat() if len(ts) else ""
+
+        datasets_seen_count, datasets_seen = _unique_in_order(group.get("dataset_name", pd.Series(dtype=str)), max_datasets)
+        families_seen_count, families_seen = _unique_in_order(group.get("dataset_family", pd.Series(dtype=str)), max_families)
+        nui_reasons_count, nui_reasons = _unique_in_order(
+            group.loc[group.get("completion_state", "") == "needs_user_input", "needs_user_input_reason"]
+            if "needs_user_input_reason" in group.columns
+            else pd.Series(dtype=str),
+            cap=9999,
+        )
+        del nui_reasons_count
+
+        last_completion_state = str(last.get("completion_state") or "")
+        last_nui_reason = str(last.get("needs_user_input_reason") or "") if last_completion_state == "needs_user_input" else ""
+
+        summaries.append(
+            {
+                "thread_key": str(key),
+                "thread_id": str(first.get("thread_id") or ""),
+                "sessionId": str(first.get("sessionId") or ""),
+                "start_utc": start_utc,
+                "end_utc": end_utc,
+                "n_turns": int(len(group)),
+                "first_intent_primary": str(first.get("intent_primary") or ""),
+                "last_intent_primary": str(last.get("intent_primary") or ""),
+                "ever_complete_answer": bool((group.get("completion_state") == "complete_answer").any()),
+                "ever_needs_user_input": bool((group.get("completion_state") == "needs_user_input").any()),
+                "ever_error": bool((group.get("completion_state") == "error").any()),
+                "ended_after_needs_user_input": bool(last_completion_state == "needs_user_input"),
+                "ended_after_error": bool(last_completion_state == "error"),
+                "n_complete_answer": int((group.get("completion_state") == "complete_answer").sum()),
+                "n_needs_user_input": int((group.get("completion_state") == "needs_user_input").sum()),
+                "n_error": int((group.get("completion_state") == "error").sum()),
+                "datasets_seen_count": int(datasets_seen_count),
+                "datasets_seen": datasets_seen,
+                "dataset_families_seen_count": int(families_seen_count),
+                "dataset_families_seen": families_seen,
+                "needs_user_input_reasons": nui_reasons,
+                "last_completion_state": last_completion_state,
+                "last_needs_user_input_reason": last_nui_reason,
+            }
+        )
+
+    out = pd.DataFrame(summaries)
+    out["_end_dt"] = pd.to_datetime(out["end_utc"], utc=True, errors="coerce")
+    out = out.sort_values("_end_dt", ascending=False, na_position="last").drop(columns=["_end_dt"])
+    return out.reset_index(drop=True)
+
+
 def summarize_content(derived: pd.DataFrame, timestamp_col: str = "timestamp") -> dict[str, Any]:
     rows = int(len(derived))
     unique_users = int(derived["userId"].replace("", pd.NA).dropna().nunique()) if "userId" in derived.columns else 0
@@ -495,11 +630,10 @@ def summarize_content(derived: pd.DataFrame, timestamp_col: str = "timestamp") -
     scored = derived[derived["intent_primary"].isin(SCORED_INTENTS)] if rows else derived
     data_intents = derived[derived["requires_data"] == True] if rows else derived
 
-    thread_col = derived["thread_id"].fillna("") if rows and "thread_id" in derived.columns else pd.Series(dtype=str)
     if rows:
-        thread_key = thread_col.where(thread_col != "", derived["sessionId"].fillna(""))
+        thread_key = compute_thread_key(derived)
         tmp = derived.assign(_thread=thread_key)
-        tmp = tmp[tmp["_thread"] != ""].sort_values("timestamp", na_position="last")
+        tmp = tmp.sort_values("timestamp", na_position="last")
         ended_nui = 0
         ended_err = 0
         total_threads = 0

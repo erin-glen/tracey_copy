@@ -80,6 +80,7 @@ from utils.content_kpis import (
     compute_derived_interactions,
     summarize_content,
     build_content_slices,
+    build_thread_summary,
 )
 from utils.eval_sampling import (
     SAMPLE_PRESETS,
@@ -158,6 +159,7 @@ __all__ = [
     "compute_derived_interactions",
     "summarize_content",
     "build_content_slices",
+    "build_thread_summary",
     # Eval sampling
     "SAMPLE_PRESETS",
     "build_preset_mask",
