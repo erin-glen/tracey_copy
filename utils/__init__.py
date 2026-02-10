@@ -76,6 +76,11 @@ from utils.charts import (
     tool_flow_sankey_data,
     tool_flow_arc_chart,
 )
+from utils.content_kpis import (
+    compute_derived_interactions,
+    summarize_content,
+    build_content_slices,
+)
 
 __all__ = [
     # Langfuse API
@@ -143,6 +148,10 @@ __all__ = [
     "reasoning_tokens_histogram",
     "tool_flow_sankey_data",
     "tool_flow_arc_chart",
+    # Content KPIs
+    "compute_derived_interactions",
+    "summarize_content",
+    "build_content_slices",
     # Shared UI
     "check_authentication",
     "render_sidebar",
