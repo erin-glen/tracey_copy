@@ -347,6 +347,7 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
                 st.session_state.analytics_user_first_seen = user_first_seen_df_new
                 st.session_state.analytics_user_first_seen_debug = debug_out
                 st.success(f"Fetched first-seen for {len(user_first_seen_df_new):,} users")
+                st.rerun()
             except Exception as e:
                 st.session_state.analytics_user_first_seen_debug = debug_out
                 st.error(f"Could not fetch user first-seen: {e}")

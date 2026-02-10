@@ -17,6 +17,8 @@ from utils.trace_parsing import (
     final_ai_message,
     parse_trace_dt,
     classify_outcome,
+    active_turn_prompt,
+    active_turn_answer,
 )
 from utils.data_helpers import as_float
 
@@ -118,40 +120,22 @@ def render_sidebar() -> dict[str, Any]:
             envs = [e.strip() for e in environment.split(",") if e.strip()]
 
         st.markdown("**📅 Date range**")
+        preset_options = ["Custom", "Last day", "Last 3 days", "Last week", "Last month"]
+        _preset_state = str(st.session_state.get("date_preset") or "Last week")
+        if _preset_state not in preset_options:
+            _preset_state = "Last week"
+        prev_date_preset = _preset_state
         date_preset = st.selectbox(
             "Date preset",
-            options=["Custom", "Last day", "Last 3 days", "Last week", "Last month", "All"],
-            index=max(
-                0,
-                ["Custom", "Last day", "Last 3 days", "Last week", "Last month", "All"].index(
-                    str(st.session_state.get("date_preset") or "Last week")
-                )
-                if str(st.session_state.get("date_preset") or "Last week")
-                in ["Custom", "Last day", "Last 3 days", "Last week", "Last month", "All"]
-                else 3,
-            ),
+            options=preset_options,
+            index=preset_options.index(_preset_state),
             label_visibility="collapsed",
             key="date_preset",
         )
 
-        use_date_filter = date_preset != "All"
-        if date_preset == "Last day":
-            start_date = default_end - timedelta(days=1)
-            end_date = default_end
-            st.caption(f"Using {start_date} to {end_date}")
-        elif date_preset == "Last 3 days":
-            start_date = default_end - timedelta(days=3)
-            end_date = default_end
-            st.caption(f"Using {start_date} to {end_date}")
-        elif date_preset == "Last week":
-            start_date = default_end - timedelta(days=7)
-            end_date = default_end
-            st.caption(f"Using {start_date} to {end_date}")
-        elif date_preset == "Last month":
-            start_date = default_end - timedelta(days=30)
-            end_date = default_end
-            st.caption(f"Using {start_date} to {end_date}")
-        elif date_preset == "Custom":
+        use_date_filter = True
+        recompute_preset_dates = bool(date_preset != "Custom" and date_preset != prev_date_preset)
+        if date_preset == "Custom":
             start_date = st.date_input(
                 "Start date",
                 value=st.session_state.get("start_date") or default_start,
@@ -163,14 +147,29 @@ def render_sidebar() -> dict[str, Any]:
                 key="end_date",
             )
         else:
-            start_date = date(2025, 9, 17)  # Launch date
-            end_date = default_end
+            if (not recompute_preset_dates) and isinstance(st.session_state.get("start_date"), date) and isinstance(
+                st.session_state.get("end_date"), date
+            ):
+                start_date = st.session_state.start_date
+                end_date = st.session_state.end_date
+            else:
+                if date_preset == "Last day":
+                    start_date = default_end - timedelta(days=1)
+                    end_date = default_end
+                elif date_preset == "Last 3 days":
+                    start_date = default_end - timedelta(days=3)
+                    end_date = default_end
+                elif date_preset == "Last week":
+                    start_date = default_end - timedelta(days=7)
+                    end_date = default_end
+                else:
+                    start_date = default_end - timedelta(days=30)
+                    end_date = default_end
+                st.session_state.start_date = start_date
+                st.session_state.end_date = end_date
+
             st.caption(f"Using {start_date} to {end_date}")
 
-        # Persist derived dates when preset is not Custom
-        if date_preset != "Custom":
-            st.session_state.start_date = start_date
-            st.session_state.end_date = end_date
         st.session_state.use_date_filter = use_date_filter
 
         # Initialize traces in session state
@@ -211,8 +210,8 @@ section[data-testid="stSidebar"] div[data-testid="stDownloadButton"] button:hove
                 normed_for_dl = [normalize_trace_format(t) for t in traces_for_dl]
                 out_rows = []
                 for n in normed_for_dl:
-                    prompt = first_human_prompt(n)
-                    answer = final_ai_message(n)
+                    prompt = active_turn_prompt(n) or first_human_prompt(n)
+                    answer = active_turn_answer(n) or final_ai_message(n)
                     dt = parse_trace_dt(n)
                     out_rows.append({
                         "trace_id": n.get("id"),
@@ -240,6 +239,10 @@ section[data-testid="stSidebar"] div[data-testid="stDownloadButton"] button:hove
                 st.button("⬇️ Download csv", disabled=True, width="stretch")
 
         fetch_status = st.empty()
+
+        fetch_warn = st.session_state.get("fetch_warning")
+        if isinstance(fetch_warn, dict) and str(fetch_warn.get("message") or "").strip():
+            st.warning(str(fetch_warn.get("message") or ""))
 
         with st.expander("🔎 Debug Langfuse call", expanded=False):
             dbg = st.session_state.get("fetch_debug")
@@ -398,7 +401,91 @@ def _handle_fetch(
         )
 
     st.session_state.stats_traces = traces
+    st.session_state.fetch_warning = _build_fetch_warning(
+        fetch_debug=st.session_state.get("fetch_debug"),
+        start_date=start_date,
+        end_date=end_date,
+        traces=traces,
+        stats_max_traces=stats_max_traces,
+        stats_page_limit=stats_page_limit,
+    )
     st.rerun()
+
+
+def _build_fetch_warning(
+    *,
+    fetch_debug: Any,
+    start_date: date,
+    end_date: date,
+    traces: list[dict[str, Any]],
+    stats_max_traces: int,
+    stats_page_limit: int,
+) -> dict[str, Any]:
+    failed_chunks = 0
+    early_stop_chunks = 0
+    page_limit_chunks = 0
+    stopped_reasons: list[str] = []
+
+    if isinstance(fetch_debug, dict) and isinstance(fetch_debug.get("chunks"), list):
+        for c in fetch_debug.get("chunks") or []:
+            if not isinstance(c, dict):
+                continue
+            if c.get("error"):
+                failed_chunks += 1
+                continue
+            dbg = c.get("debug")
+            if isinstance(dbg, dict):
+                reason = dbg.get("stopped_early_reason")
+                if isinstance(reason, str) and reason.strip():
+                    early_stop_chunks += 1
+                    stopped_reasons.append(reason.strip())
+                if dbg.get("stopped_due_to_page_limit"):
+                    page_limit_chunks += 1
+
+    single_reason = None
+    if isinstance(fetch_debug, dict) and "chunks" not in fetch_debug:
+        r = fetch_debug.get("stopped_early_reason")
+        if isinstance(r, str) and r.strip():
+            single_reason = r.strip()
+        if fetch_debug.get("stopped_due_to_page_limit"):
+            page_limit_chunks += 1
+
+    truncated = bool(isinstance(stats_max_traces, int) and stats_max_traces > 0 and len(traces) >= stats_max_traces)
+    incomplete = bool(failed_chunks or early_stop_chunks or page_limit_chunks or truncated or single_reason)
+
+    if not incomplete:
+        return {}
+
+    lines: list[str] = []
+    lines.append(
+        "Some trace fetch requests did not fully complete. Your dataset may be incomplete, which can show up as missing days in charts."
+    )
+    lines.append(f"Date range: {start_date.isoformat()} → {end_date.isoformat()}")
+    lines.append(f"Loaded traces: {len(traces):,}")
+    if failed_chunks:
+        lines.append(f"Failed chunks: {failed_chunks}")
+    if early_stop_chunks:
+        lines.append(f"Chunks stopped early: {early_stop_chunks}")
+    if page_limit_chunks:
+        lines.append(f"Chunks hit page limit: {page_limit_chunks} (max pages = {int(stats_page_limit)})")
+    if truncated:
+        lines.append(f"Hit max traces limit: {int(stats_max_traces):,}")
+    if single_reason:
+        lines.append(f"Stopped early: {single_reason}")
+    if stopped_reasons:
+        uniq = []
+        seen = set()
+        for r in stopped_reasons:
+            if r not in seen:
+                seen.add(r)
+                uniq.append(r)
+            if len(uniq) >= 3:
+                break
+        if uniq:
+            lines.append("Examples: " + " | ".join(uniq))
+    lines.append("Suggested fixes: reduce date range, increase 'Max pages', increase 'HTTP timeout', or raise 'Max traces'.")
+
+    return {"message": "\n".join(lines)}
 
 
 def _fetch_chunked(
@@ -465,7 +552,7 @@ def _fetch_chunked(
     fetch_debug: dict[str, Any] = {"chunks": [], "total_traces": 0, "parallel_workers": stats_parallel_workers}
     completed_count = 0
 
-    with fetch_status.status(f"Fetching traces in {len(chunks)} chunks of 5 days ({stats_parallel_workers} parallel)...", expanded=True) as status:
+    with fetch_status.status(f"Fetching traces in {len(chunks)} chunks of 3 days ({stats_parallel_workers} parallel)...", expanded=True) as status:
         with ThreadPoolExecutor(max_workers=stats_parallel_workers) as executor:
             futures = {executor.submit(fetch_chunk, chunk): chunk for chunk in chunks}
 

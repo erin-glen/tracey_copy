@@ -514,6 +514,8 @@ def fetch_traces_window(
                 "pages": [],
                 "limit_adjustments": [],
                 "stopped_early_reason": None,
+                "stopped_due_to_page_limit": False,
+                "stopped_due_to_max_traces": False,
             }
         )
 
@@ -631,6 +633,26 @@ def fetch_traces_window(
 
         page += 1
         time_mod.sleep(0.05)
+
+    if isinstance(debug_out, dict):
+        if len(rows) >= max_traces:
+            debug_out["stopped_due_to_max_traces"] = True
+            if not debug_out.get("stopped_early_reason"):
+                debug_out["stopped_early_reason"] = f"Hit max_traces limit ({int(max_traces):,})"
+
+        hit_page_limit = bool(page > page_limit)
+        ended_on_full_page = False
+        try:
+            if isinstance(debug_out.get("pages"), list) and debug_out["pages"]:
+                last = debug_out["pages"][-1]
+                ended_on_full_page = int(last.get("items_returned") or 0) >= int(last.get("effective_page_size") or 0)
+        except Exception:
+            ended_on_full_page = False
+
+        if hit_page_limit and ended_on_full_page:
+            debug_out["stopped_due_to_page_limit"] = True
+            if not debug_out.get("stopped_early_reason"):
+                debug_out["stopped_early_reason"] = f"Hit page_limit ({int(page_limit)})"
 
     if use_disk_cache:
         _try_write_cache(cache_path, rows)
