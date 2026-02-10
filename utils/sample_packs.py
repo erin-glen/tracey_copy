@@ -42,6 +42,11 @@ SAMPLE_PACKS = {
         "description": "codeact_present==True for trend_over_time or data_lookup.",
         "preset_id": "codeact_examples",
     },
+    "codeact_param_issues": {
+        "label": "CodeAct parameter issues",
+        "description": "codeact_present==True in scored intents with codeact_consistency_issue==True.",
+        "preset_id": "codeact_param_issues",
+    },
 }
 
 DEFAULT_SAMPLE_COLS = [
@@ -66,6 +71,8 @@ DEFAULT_SAMPLE_COLS = [
     "codeact_present",
     "codeact_code_blocks_count",
     "codeact_uses_analytics_api",
+    "codeact_consistency_issue",
+    "codeact_consistency_reason",
     "codeact_code_snippet",
     "codeact_exec_snippet",
     "prompt",
