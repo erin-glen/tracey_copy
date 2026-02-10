@@ -81,6 +81,12 @@ from utils.content_kpis import (
     summarize_content,
     build_content_slices,
 )
+from utils.eval_sampling import (
+    SAMPLE_PRESETS,
+    build_preset_mask,
+    apply_candidate_filters,
+    sample_trace_ids,
+)
 
 __all__ = [
     # Langfuse API
@@ -152,6 +158,11 @@ __all__ = [
     "compute_derived_interactions",
     "summarize_content",
     "build_content_slices",
+    # Eval sampling
+    "SAMPLE_PRESETS",
+    "build_preset_mask",
+    "apply_candidate_filters",
+    "sample_trace_ids",
     # Shared UI
     "check_authentication",
     "render_sidebar",
