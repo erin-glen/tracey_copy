@@ -13,7 +13,8 @@ from utils import (
     normalize_trace_format,
     parse_trace_dt,
     first_human_prompt,
-    final_ai_message,
+    current_human_prompt,
+    current_turn_ai_message,
     classify_outcome,
     fetch_user_first_seen,
     invalidate_user_first_seen_cache,
@@ -112,8 +113,9 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
 
     rows: list[dict[str, Any]] = []
     for n in normed:
-        prompt = first_human_prompt(n)
-        answer = final_ai_message(n)
+        first_prompt = first_human_prompt(n)
+        prompt = current_human_prompt(n)
+        answer = current_turn_ai_message(n)
         dt = parse_trace_dt(n)
         outcome = classify_outcome(n, answer or "")
 
@@ -132,6 +134,7 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
                 "latency_seconds": as_float(n.get("latency")),
                 "total_cost": as_float(n.get("totalCost")),
                 "outcome": outcome,
+                "first_prompt": first_prompt,
                 "prompt": prompt,
                 "answer": answer,
                 "aoi_name": ctx.get("aoi_name", ""),
@@ -845,9 +848,9 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
         _norm_prompt(k): v for k, v in starter_label_map_raw.items()
     }
 
-    if starter_prompts and "prompt" in df.columns and df["prompt"].notna().any():
+    if starter_prompts and "first_prompt" in df.columns and df["first_prompt"].notna().any():
         starter_set = {_norm_prompt(p) for p in starter_prompts}
-        prompt_norm = df["prompt"].map(_norm_prompt)
+        prompt_norm = df["first_prompt"].map(_norm_prompt)
         starter_label = prompt_norm.map(lambda p: starter_label_map.get(p) if p in starter_set else "Other")
 
         starter_count = int((starter_label != "Other").sum())

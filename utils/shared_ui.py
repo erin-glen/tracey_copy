@@ -13,8 +13,8 @@ from utils.data_helpers import maybe_load_dotenv, iso_utc, csv_bytes_any, init_s
 from utils.langfuse_api import fetch_traces_window, get_langfuse_headers
 from utils.trace_parsing import (
     normalize_trace_format,
-    first_human_prompt,
-    final_ai_message,
+    current_human_prompt,
+    current_turn_ai_message,
     parse_trace_dt,
     classify_outcome,
 )
@@ -211,8 +211,8 @@ section[data-testid="stSidebar"] div[data-testid="stDownloadButton"] button:hove
                 normed_for_dl = [normalize_trace_format(t) for t in traces_for_dl]
                 out_rows = []
                 for n in normed_for_dl:
-                    prompt = first_human_prompt(n)
-                    answer = final_ai_message(n)
+                    prompt = current_human_prompt(n)
+                    answer = current_turn_ai_message(n)
                     dt = parse_trace_dt(n)
                     out_rows.append({
                         "trace_id": n.get("id"),
