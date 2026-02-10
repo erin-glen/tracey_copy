@@ -4,7 +4,52 @@ import re
 import json
 from datetime import datetime, timezone
 from typing import Any
+from pathlib import Path
 from urllib.parse import urlparse
+
+
+_DEFAULT_ERROR_ANSWER_NEEDLES = [
+    "error",
+    "exception",
+    "traceback",
+    "something went wrong",
+    "i can't",
+    "i cannot",
+    "unable to",
+    "sorry",
+    "failed to",
+]
+
+_ERROR_ANSWER_NEEDLES: list[str] | None = None
+
+
+def _load_error_answer_needles() -> list[str]:
+    global _ERROR_ANSWER_NEEDLES
+    if _ERROR_ANSWER_NEEDLES is not None:
+        return _ERROR_ANSWER_NEEDLES
+
+    needles = list(_DEFAULT_ERROR_ANSWER_NEEDLES)
+    try:
+        p = Path(__file__).parent / "fixtures" / "error_answer_needles.json"
+        raw = json.loads(p.read_text(encoding="utf-8"))
+        if isinstance(raw, dict) and isinstance(raw.get("needles"), list):
+            for n in raw.get("needles") or []:
+                if isinstance(n, str) and n.strip():
+                    needles.append(n.strip())
+    except Exception:
+        pass
+
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for n in needles:
+        k = n.strip().lower()
+        if not k or k in seen:
+            continue
+        seen.add(k)
+        deduped.append(k)
+
+    _ERROR_ANSWER_NEEDLES = deduped
+    return _ERROR_ANSWER_NEEDLES
 
 
 def normalize_trace_format(row: dict[str, Any]) -> dict[str, Any]:
@@ -103,17 +148,7 @@ def looks_like_error_answer(text: str) -> bool:
     t = (text or "").strip().lower()
     if not t:
         return True
-    needles = [
-        "error",
-        "exception",
-        "traceback",
-        "something went wrong",
-        "i can't",
-        "i cannot",
-        "unable to",
-        "sorry",
-        "failed to",
-    ]
+    needles = _load_error_answer_needles()
     return any(n in t for n in needles)
 
 
