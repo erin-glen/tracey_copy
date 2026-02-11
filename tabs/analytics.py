@@ -206,6 +206,8 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
     user_first_seen_filled_from_window = 0
     has_user_first_seen = False
 
+    engaged_returning_users_total = 0
+
     if isinstance(st.session_state.get("analytics_user_first_seen"), pd.DataFrame):
         user_first_seen_df = st.session_state.get("analytics_user_first_seen")
 
@@ -430,10 +432,53 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
                 st.write(user_first_seen_coverage_debug)
             st.json(debug_df)
     if has_user_first_seen:
+        engaged_returning_users: set[str] = set()
+        if "user_id" in df.columns and "session_id" in df.columns:
+            try:
+                _s = df.dropna(subset=["user_id", "session_id"]).copy()
+                _s["user_id"] = _s["user_id"].astype(str).map(lambda x: x.strip())
+                _s["session_id"] = _s["session_id"].astype(str).map(lambda x: x.strip())
+                _s = _s[_s["user_id"].ne("")]
+                _s = _s[_s["session_id"].ne("")]
+                _s = _s[~_s["user_id"].astype(str).str.contains("machine", case=False, na=False)]
+
+                _spc = (
+                    _s.groupby(["user_id", "session_id"], dropna=True)
+                    .agg(prompts=("trace_id", "count"))
+                    .reset_index()
+                )
+                _spc["prompts"] = pd.to_numeric(_spc["prompts"], errors="coerce").fillna(0)
+                _good_sessions = _spc[_spc["prompts"] >= 2]
+                _engaged_counts = (
+                    _good_sessions.groupby("user_id", dropna=True)
+                    .agg(good_sessions=("session_id", "nunique"))
+                    .reset_index()
+                )
+                _engaged_raw = set(
+                    _engaged_counts.loc[_engaged_counts["good_sessions"] >= 2, "user_id"].astype(str).tolist()
+                )
+
+                _fs = user_first_seen_df.dropna(subset=["user_id", "first_seen"]).copy()
+                _fs["user_id"] = _fs["user_id"].astype(str).map(lambda x: x.strip())
+                _fs = _fs[_fs["user_id"].ne("")]
+                _fs = _fs[~_fs["user_id"].astype(str).str.contains("machine", case=False, na=False)]
+                _fs["first_seen"] = pd.to_datetime(_fs["first_seen"], errors="coerce", utc=True)
+                _fs = _fs.dropna(subset=["first_seen"])
+                _fs["first_seen_date"] = _fs["first_seen"].dt.date
+                _returning_set = set(
+                    _fs.loc[_fs["first_seen_date"] < start_date, "user_id"].astype(str).tolist()
+                )
+
+                engaged_returning_users = _engaged_raw.intersection(_returning_set)
+            except Exception:
+                engaged_returning_users = set()
+        engaged_returning_users_total = int(len(engaged_returning_users))
+
         user_lines = (
             f"• Total users (all time): {user_first_seen_total_users:,}\n"
             f"• New users (since {start_date_label}): {user_first_seen_new_users:,}\n"
             f"• Returning users (since {start_date_label}): {user_first_seen_returning_users:,}\n"
+            f"• Engaged users (since {start_date_label}): {engaged_returning_users_total:,}\n"
         )
     else:
         user_lines = ""
@@ -480,6 +525,7 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
                 {"Section": "Volume", "Metric": "Total users (all time)", "Value": f"{user_first_seen_total_users:,}", "Description": "Distinct user IDs seen since launch (Sept 17th 2025) in Langfuse"},
                 {"Section": "Volume", "Metric": f"New users (since {start_date_label})", "Value": f"{user_first_seen_new_users:,}", "Description": f"Users whose first-ever trace was after {start_date_label}"},
                 {"Section": "Volume", "Metric": f"Returning users (since {start_date_label})", "Value": f"{user_first_seen_returning_users:,}", "Description": f"Users active within the selected range whose first-ever trace was before {start_date_label}"},
+                {"Section": "Volume", "Metric": f"Engaged users (since {start_date_label})", "Value": f"{engaged_returning_users_total:,}", "Description": "Returning users who had ≥2 sessions in the range, and in each of those sessions sent ≥2 prompts"},
             ]
         )
 
@@ -702,6 +748,40 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
 
         # Additional insight: User activity over time (new vs returning)
         if "user_id" in base_daily.columns:
+            engaged_users: set[str] = set()
+            if "session_id" in base_daily.columns:
+                try:
+                    base_user_sessions = base_daily.dropna(subset=["user_id", "session_id"]).copy()
+                    base_user_sessions["user_id"] = base_user_sessions["user_id"].astype(str).map(lambda x: x.strip())
+                    base_user_sessions["session_id"] = (
+                        base_user_sessions["session_id"].astype(str).map(lambda x: x.strip())
+                    )
+                    base_user_sessions = base_user_sessions[base_user_sessions["user_id"].ne("")]
+                    base_user_sessions = base_user_sessions[base_user_sessions["session_id"].ne("")]
+                    base_user_sessions = base_user_sessions[
+                        ~base_user_sessions["user_id"].astype(str).str.contains("machine", case=False, na=False)
+                    ]
+
+                    session_prompt_counts = (
+                        base_user_sessions.groupby(["user_id", "session_id"], dropna=True)
+                        .agg(prompts=("trace_id", "count"))
+                        .reset_index()
+                    )
+                    session_prompt_counts["prompts"] = pd.to_numeric(
+                        session_prompt_counts["prompts"], errors="coerce"
+                    ).fillna(0)
+                    good_sessions = session_prompt_counts[session_prompt_counts["prompts"] >= 2]
+                    engaged_counts = (
+                        good_sessions.groupby("user_id", dropna=True)
+                        .agg(good_sessions=("session_id", "nunique"))
+                        .reset_index()
+                    )
+                    engaged_users = set(
+                        engaged_counts.loc[engaged_counts["good_sessions"] >= 2, "user_id"].astype(str).tolist()
+                    )
+                except Exception:
+                    engaged_users = set()
+
             base_user_days = base_daily.dropna(subset=["date", "user_id"]).copy()
             base_user_days["user_id"] = base_user_days["user_id"].astype(str).map(lambda x: x.strip())
             base_user_days = base_user_days[base_user_days["user_id"].ne("")]
@@ -738,6 +818,8 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
                     base_daily_with_first["date"] == base_daily_with_first["first_seen_date"]
                 )
 
+            base_daily_with_first["is_engaged"] = base_daily_with_first["user_id"].isin(engaged_users)
+
             new_returning = (
                 base_daily_with_first.groupby("date")
                 .agg(
@@ -765,14 +847,60 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
                     "returning_users": "Returning",
                 })
 
-                color_scale = alt.Scale(domain=["New", "Returning"], range=["#2e90fa", "#98a2b3"])
+                if len(engaged_users):
+                    engaged_daily = (
+                        base_daily_with_first[base_daily_with_first["is_engaged"]]
+                        .groupby("date")
+                        .agg(engaged_users=("user_id", "nunique"))
+                        .reset_index()
+                    )
+                    new_returning = new_returning.merge(engaged_daily, on="date", how="left")
+                    new_returning["engaged_users"] = (
+                        pd.to_numeric(new_returning["engaged_users"], errors="coerce").fillna(0).astype(int)
+                    )
+                    new_returning["new_users"] = (
+                        pd.to_numeric(new_returning["new_users"], errors="coerce").fillna(0).astype(int)
+                    )
+                    new_returning["returning_users"] = (
+                        pd.to_numeric(new_returning["returning_users"], errors="coerce").fillna(0).astype(int)
+                    )
+                    # Make segments mutually exclusive by taking Engaged users out of New/Returning.
+                    new_returning["new_users"] = (new_returning["new_users"] - new_returning["engaged_users"]).clip(
+                        lower=0
+                    )
+                    new_returning["returning_users"] = (
+                        new_returning["returning_users"] - new_returning["engaged_users"]
+                    ).clip(lower=0)
+
+                    new_returning["day_total_users"] = (
+                        new_returning["new_users"] + new_returning["returning_users"] + new_returning["engaged_users"]
+                    )
+                    nr_long = new_returning.melt(
+                        id_vars=["date", "day_total_users"],
+                        value_vars=["new_users", "returning_users", "engaged_users"],
+                        var_name="user_type",
+                        value_name="count",
+                    )
+                    nr_long["pct_of_day"] = nr_long["count"] / nr_long["day_total_users"].clip(lower=1)
+                    nr_long["user_type"] = nr_long["user_type"].replace({
+                        "new_users": "New",
+                        "returning_users": "Returning",
+                        "engaged_users": "Engaged",
+                    })
+
+                domain = ["New", "Returning"]
+                colors = ["#98a2b3", "#2e90fa"]
+                if len(engaged_users):
+                    domain = ["New", "Returning", "Engaged"]
+                    colors = ["#98a2b3", "#2e90fa", "#12b76a"]
+                color_scale = alt.Scale(domain=domain, range=colors)
                 nr_chart = (
                     alt.Chart(nr_long)
                     .mark_bar(size=17)
                     .encode(
                         x=alt.X("date:T", title="Date"),
                         y=alt.Y("count:Q", title="Users", stack=True),
-                        color=alt.Color("user_type:N", title="User type", sort=["New", "Returning"], scale=color_scale),
+                        color=alt.Color("user_type:N", title="User type", sort=domain, scale=color_scale),
                         tooltip=[
                             alt.Tooltip("date:T", title="Date"),
                             alt.Tooltip("user_type:N", title="Type"),
@@ -783,14 +911,21 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
                     .properties(height=220)
                 )
 
-                total_new = int(new_returning["new_users"].sum())
-                total_returning = int(new_returning["returning_users"].sum())
-                pie_df = pd.DataFrame(
-                    [
-                        {"user_type": "New", "count": total_new},
-                        {"user_type": "Returning", "count": total_returning},
-                    ]
+                total_new = int(pd.to_numeric(new_returning["new_users"], errors="coerce").fillna(0).sum())
+                total_returning = int(
+                    pd.to_numeric(new_returning["returning_users"], errors="coerce").fillna(0).sum()
                 )
+                pie_rows: list[dict[str, Any]] = [
+                    {"user_type": "New", "count": total_new},
+                    {"user_type": "Returning", "count": total_returning},
+                ]
+                if "engaged_users" in new_returning.columns:
+                    total_engaged = int(
+                        pd.to_numeric(new_returning["engaged_users"], errors="coerce").fillna(0).sum()
+                    )
+                    pie_rows.append({"user_type": "Engaged", "count": total_engaged})
+
+                pie_df = pd.DataFrame(pie_rows)
                 pie_df = pie_df[pie_df["count"] > 0]
                 pie_df["percent"] = pie_df["count"] / max(1, int(pie_df["count"].sum())) * 100
 
@@ -799,7 +934,7 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
                     .mark_arc(innerRadius=55)
                     .encode(
                         theta=alt.Theta("count:Q", title="Users"),
-                        color=alt.Color("user_type:N", title="", sort=["New", "Returning"], scale=color_scale),
+                        color=alt.Color("user_type:N", title="", sort=domain, scale=color_scale),
                         tooltip=[
                             alt.Tooltip("user_type:N", title="Type"),
                             alt.Tooltip("count:Q", title="Users", format=","),
