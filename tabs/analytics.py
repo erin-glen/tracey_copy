@@ -9,7 +9,6 @@ import pandas as pd
 import streamlit as st
 
 from utils import (
-    get_langfuse_headers,
     normalize_trace_format,
     parse_trace_dt,
     first_human_prompt,
@@ -17,8 +16,6 @@ from utils import (
     classify_outcome,
     active_turn_prompt,
     active_turn_answer,
-    fetch_user_first_seen,
-    invalidate_user_first_seen_cache,
     extract_trace_context,
     extract_tool_calls_and_results,
     extract_tool_flow,
@@ -43,8 +40,6 @@ from utils import (
 
 
 def render(
-    public_key: str,
-    secret_key: str,
     base_url: str,
     base_thread_url: str,
     gemini_api_key: str,
@@ -52,7 +47,6 @@ def render(
     start_date,
     end_date,
     envs: list[str],
-    stats_page_limit: int,
     stats_max_traces: int,
 ) -> None:
     """Render the Trace Analytics Reports tab."""
@@ -312,81 +306,8 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
         f"### Summary Statistics ({(end_date - start_date).days + 1} days: {start_date_label} to {end_date_label})"
     )
 
-    st.caption(
-        "To enable true New vs Returning user metrics, fetch the all-time user first-seen table (scans traces oldest → newest starting 2025-09-17). "
-        "Uses the sidebar 'Max pages' + 'Traces per page' limits."
-    )
-    cached_df = st.session_state.get("analytics_user_first_seen")
-    btn_c1, btn_c2, btn_c3 = st.columns([1, 1, 1])
-    with btn_c1:
-        fetch_btn_type = "secondary" if has_user_first_seen else "primary"
-        if st.button("👥 Fetch all-time user data", type=fetch_btn_type, width="stretch"):
-            debug_out: dict[str, Any] = {}
-            try:
-                headers = get_langfuse_headers(public_key, secret_key)
-                from_iso = datetime(2025, 9, 17, tzinfo=timezone.utc).isoformat()
-                page_size = int(st.session_state.get("stats_page_size") or 100)
-                first_seen_map = fetch_user_first_seen(
-                    base_url=base_url,
-                    headers=headers,
-                    from_iso=from_iso,
-                    envs=envs,
-                    page_size=page_size,
-                    page_limit=int(stats_page_limit),
-                    retry=3,
-                    backoff=0.75,
-                    debug_out=debug_out,
-                )
-                user_first_seen_df_new = pd.DataFrame(
-                    [{"user_id": k, "first_seen": v} for k, v in (first_seen_map or {}).items()]
-                )
-                if len(user_first_seen_df_new):
-                    user_first_seen_df_new["first_seen"] = pd.to_datetime(
-                        user_first_seen_df_new["first_seen"], errors="coerce", utc=True
-                    )
-                    user_first_seen_df_new = user_first_seen_df_new.dropna(subset=["first_seen"])
-                    user_first_seen_df_new = user_first_seen_df_new.sort_values("first_seen")
-                st.session_state.analytics_user_first_seen = user_first_seen_df_new
-                st.session_state.analytics_user_first_seen_debug = debug_out
-                st.success(f"Fetched first-seen for {len(user_first_seen_df_new):,} users")
-                st.rerun()
-            except Exception as e:
-                st.session_state.analytics_user_first_seen_debug = debug_out
-                st.error(f"Could not fetch user first-seen: {e}")
-
-    with btn_c2:
-        if isinstance(cached_df, pd.DataFrame) and len(cached_df):
-            st.download_button(
-                "⬇️ Download user data",
-                csv_bytes_any(cached_df.assign(first_seen=cached_df["first_seen"].astype(str)).to_dict("records")),
-                "user_first_seen.csv",
-                "text/csv",
-                key="analytics_user_first_seen_csv",
-                width="stretch",
-            )
-        else:
-            st.button("⬇️ Download user data", disabled=True, width="stretch")
-
-    with btn_c3:
-        if st.button("🧹 Invalidate cache", disabled=not has_user_first_seen, width="stretch"):
-            from_iso = datetime(2025, 9, 17, tzinfo=timezone.utc).isoformat()
-            page_size = int(st.session_state.get("stats_page_size") or 100)
-            removed = invalidate_user_first_seen_cache(
-                base_url=base_url,
-                from_iso=from_iso,
-                envs=envs,
-                page_size=page_size,
-                page_limit=int(stats_page_limit),
-            )
-            st.session_state.analytics_user_first_seen = None
-            if removed:
-                st.toast("Cache cleared ✅")
-            else:
-                st.toast("No cache file found (cleared session cache) ⚠️")
-            st.rerun()
-
     if not has_user_first_seen:
-        st.info("Fetch **all time user data** to enable New vs Returning user metrics.")
+        st.info("Use the sidebar **👥 Fetch users** button to enable New vs Returning user metrics.")
 
     user_first_seen_coverage_debug: dict[str, Any] | None = None
     if user_first_seen_df is not None and len(user_first_seen_df) and "user_id" in df.columns:

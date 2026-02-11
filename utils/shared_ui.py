@@ -2,7 +2,6 @@
 
 import os
 import hmac
-import inspect
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
@@ -10,7 +9,7 @@ from typing import Any
 import streamlit as st
 
 from utils.data_helpers import maybe_load_dotenv, iso_utc, csv_bytes_any, init_session_state
-from utils.langfuse_api import fetch_traces_window, get_langfuse_headers
+from utils.langfuse_api import fetch_traces_window, fetch_user_first_seen, invalidate_user_first_seen_cache, get_langfuse_headers
 from utils.trace_parsing import (
     normalize_trace_format,
     first_human_prompt,
@@ -171,12 +170,17 @@ def render_sidebar() -> dict[str, Any]:
             st.caption(f"Using {start_date} to {end_date}")
 
         st.session_state._prev_date_preset = date_preset
-
         st.session_state.use_date_filter = use_date_filter
 
         # Initialize traces in session state
         if "stats_traces" not in st.session_state:
             st.session_state.stats_traces = []
+
+         # --- Trace status ---
+        traces_loaded = st.session_state.get("stats_traces", [])
+        traces_loaded_str = f"_({len(traces_loaded):,} traces loaded)_" if traces_loaded else ""
+
+        st.markdown(f"**📊 Traces** {traces_loaded_str}")
 
         # Sidebar button styling
         st.markdown(
@@ -230,9 +234,9 @@ section[data-testid="stSidebar"] div[data-testid="stDownloadButton"] button:hove
                     })
                 raw_csv_bytes = csv_bytes_any(out_rows)
                 st.download_button(
-                    label="⬇️ Download csv",
+                    label="⬇️ Raw traces csv",
                     data=raw_csv_bytes,
-                    file_name="gnw_traces_raw.csv",
+                    file_name=f"gnw_traces_raw_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.csv",
                     mime="text/csv",
                     key="raw_csv_download",
                     width="stretch",
@@ -246,6 +250,57 @@ section[data-testid="stSidebar"] div[data-testid="stDownloadButton"] button:hove
         if isinstance(fetch_warn, dict) and str(fetch_warn.get("message") or "").strip():
             st.warning(str(fetch_warn.get("message") or ""))
 
+        # --- CSV upload as alternative to LF pull ---
+        with st.expander("📤 Upload trace CSV", expanded=False):
+            st.caption("Upload a previously downloaded trace CSV instead of pulling from Langfuse.")
+            uploaded_file = st.file_uploader(
+                "Trace CSV",
+                type=["csv"],
+                key="trace_csv_uploader",
+                label_visibility="collapsed",
+            )
+            upload_clicked = st.button("Load CSV", disabled=uploaded_file is None, width="stretch")
+
+        # --- User data enrichment (shown after traces are loaded) ---
+        user_fetch_clicked = False
+        user_invalidate_clicked = False
+        if traces_loaded:
+            if "analytics_user_first_seen" not in st.session_state:
+                st.session_state.analytics_user_first_seen = None
+            if "analytics_user_first_seen_debug" not in st.session_state:
+                st.session_state.analytics_user_first_seen_debug = {}
+
+            import pandas as pd
+            has_user_data = isinstance(st.session_state.get("analytics_user_first_seen"), pd.DataFrame) and len(st.session_state.analytics_user_first_seen) > 0
+            users_loaded_str = f"_({len(st.session_state.analytics_user_first_seen):,} users loaded)_" if has_user_data else ""
+            st.markdown(f"**👥 User data** {users_loaded_str}")
+
+            u_c1, u_c2 = st.columns(2)
+            with u_c1:
+                btn_type = "secondary" if has_user_data else "primary"
+                user_fetch_clicked = st.button("🚀 Fetch users", type=btn_type, width="stretch")
+            with u_c2:
+                if has_user_data:
+                    cached_df = st.session_state.analytics_user_first_seen
+                    st.download_button(
+                        "⬇️ Users csv",
+                        csv_bytes_any(cached_df.assign(first_seen=cached_df["first_seen"].astype(str)).to_dict("records")),
+                        "user_first_seen.csv",
+                        "text/csv",
+                        key="sidebar_user_first_seen_csv",
+                        width="stretch",
+                    )
+                else:
+                    st.button("⬇️ Users csv", disabled=True, width="stretch")
+
+            user_invalidate_clicked = st.button(
+                "🧹 Invalidate user cache",
+                disabled=not has_user_data,
+                width="stretch",
+            )
+
+        st.markdown("---")
+        st.markdown("**⚙️ Configuration**")
         with st.expander("🔎 Debug Langfuse call", expanded=False):
             dbg = st.session_state.get("fetch_debug")
             if isinstance(dbg, dict) and dbg:
@@ -326,6 +381,30 @@ section[data-testid="stSidebar"] div[data-testid="stDownloadButton"] button:hove
         # NOTE: Do not assign to keys that are bound to widgets (environment/date_preset/start_date/end_date)
         # after the widget is instantiated. Streamlit manages these keys.
         st.session_state.use_date_filter = use_date_filter
+
+    # Handle CSV upload (outside the sidebar layout)
+    if upload_clicked and uploaded_file is not None:
+        _handle_csv_upload(uploaded_file)
+
+    # Handle user data fetch
+    if user_fetch_clicked:
+        _handle_user_fetch(
+            public_key=public_key,
+            secret_key=secret_key,
+            base_url=base_url,
+            envs=envs,
+            stats_page_limit=int(stats_page_limit),
+            stats_page_size=int(stats_page_size),
+        )
+
+    # Handle user cache invalidation
+    if user_invalidate_clicked:
+        _handle_user_invalidate(
+            base_url=base_url,
+            envs=envs,
+            stats_page_limit=int(stats_page_limit),
+            stats_page_size=int(stats_page_size),
+        )
 
     # Handle fetch (outside the sidebar layout, but still within this function)
     if fetch_clicked:
@@ -513,40 +592,26 @@ def _fetch_chunked(
         current_start = current_end + timedelta(days=1)
         idx += 1
 
-    sig = None
-    try:
-        sig = inspect.signature(fetch_traces_window)
-    except Exception:
-        pass
-    supports_debug_out = bool(sig and "debug_out" in sig.parameters)
-    supports_page_size = bool(sig and "page_size" in sig.parameters)
-    supports_http_timeout = bool(sig and "http_timeout_s" in sig.parameters)
-
     def fetch_chunk(chunk_info: tuple[int, date, date]) -> tuple[int, date, date, list[dict[str, Any]], dict[str, Any]]:
         chunk_idx, chunk_start, chunk_end = chunk_info
         from_iso = iso_utc(datetime.combine(chunk_start, time.min).replace(tzinfo=timezone.utc))
         to_iso = iso_utc(datetime.combine(chunk_end, time.max).replace(tzinfo=timezone.utc))
 
         chunk_debug: dict[str, Any] = {}
-        call_kwargs: dict[str, Any] = {
-            "base_url": base_url,
-            "headers": headers,
-            "from_iso": from_iso,
-            "to_iso": to_iso,
-            "envs": envs,
-            "page_limit": stats_page_limit,
-            "max_traces": stats_max_traces,
-            "retry": 2,
-            "backoff": 0.5,
-        }
-        if supports_page_size:
-            call_kwargs["page_size"] = stats_page_size
-        if supports_http_timeout:
-            call_kwargs["http_timeout_s"] = stats_http_timeout_s
-        if supports_debug_out:
-            call_kwargs["debug_out"] = chunk_debug
-
-        chunk_traces = fetch_traces_window(**call_kwargs)
+        chunk_traces = fetch_traces_window(
+            base_url=base_url,
+            headers=headers,
+            from_iso=from_iso,
+            to_iso=to_iso,
+            envs=envs,
+            page_size=stats_page_size,
+            page_limit=stats_page_limit,
+            max_traces=stats_max_traces,
+            retry=2,
+            backoff=0.5,
+            http_timeout_s=stats_http_timeout_s,
+            debug_out=chunk_debug,
+        )
         return (chunk_idx, chunk_start, chunk_end, chunk_traces, chunk_debug)
 
     all_traces: list[dict[str, Any]] = []
@@ -616,36 +681,131 @@ def _fetch_single(
 
     with fetch_status.status("Fetching traces...", expanded=False):
         fetch_debug: dict[str, Any] = {}
-        sig = None
-        try:
-            sig = inspect.signature(fetch_traces_window)
-        except Exception:
-            pass
-
-        supports_debug_out = bool(sig and "debug_out" in sig.parameters)
-        supports_page_size = bool(sig and "page_size" in sig.parameters)
-        supports_http_timeout = bool(sig and "http_timeout_s" in sig.parameters)
-
-        call_kwargs: dict[str, Any] = {
-            "base_url": base_url,
-            "headers": headers,
-            "from_iso": from_iso,
-            "to_iso": to_iso,
-            "envs": envs,
-            "page_limit": stats_page_limit,
-            "max_traces": stats_max_traces,
-            "retry": 2,
-            "backoff": 0.5,
-        }
-        if supports_page_size:
-            call_kwargs["page_size"] = stats_page_size
-        if supports_http_timeout:
-            call_kwargs["http_timeout_s"] = stats_http_timeout_s
-        if supports_debug_out:
-            call_kwargs["debug_out"] = fetch_debug
-
-        traces = fetch_traces_window(**call_kwargs)
+        traces = fetch_traces_window(
+            base_url=base_url,
+            headers=headers,
+            from_iso=from_iso,
+            to_iso=to_iso,
+            envs=envs,
+            page_size=stats_page_size,
+            page_limit=stats_page_limit,
+            max_traces=stats_max_traces,
+            retry=2,
+            backoff=0.5,
+            http_timeout_s=stats_http_timeout_s,
+            debug_out=fetch_debug,
+        )
         fetch_status.status(f"Fetched {len(traces)} traces", state="complete", expanded=False)
 
     st.session_state.fetch_debug = fetch_debug
     return traces
+
+
+def _handle_csv_upload(uploaded_file: Any) -> None:
+    """Handle CSV upload as alternative to Langfuse fetch.
+
+    Reconstructs minimal trace dicts from the CSV columns so that
+    existing parsing/analytics pipelines work transparently.
+    """
+    import io
+    import csv as csv_mod
+
+    try:
+        raw = uploaded_file.getvalue()
+        text = raw.decode("utf-8-sig") if raw[:3] == b"\xef\xbb\xbf" else raw.decode("utf-8")
+        reader = csv_mod.DictReader(io.StringIO(text))
+        traces: list[dict[str, Any]] = []
+        for row in reader:
+            trace: dict[str, Any] = {
+                "id": row.get("trace_id") or "",
+                "timestamp": row.get("timestamp") or "",
+                "environment": row.get("environment") or "",
+                "sessionId": row.get("session_id") or "",
+                "userId": row.get("user_id") or "",
+                "latency": as_float(row.get("latency_seconds")),
+                "totalCost": as_float(row.get("total_cost")),
+                "input": {"messages": [{"type": "human", "content": row.get("prompt") or ""}]},
+                "output": {"messages": [{"type": "ai", "content": row.get("answer") or ""}]},
+                "metadata": {},
+                "_from_csv": True,
+            }
+            traces.append(trace)
+
+        st.session_state.stats_traces = traces
+        st.session_state.fetch_debug = {"source": "csv_upload", "rows": len(traces)}
+        st.session_state.fetch_warning = {}
+        st.toast(f"Loaded {len(traces):,} traces from CSV")
+        st.rerun()
+    except Exception as e:
+        st.error(f"Failed to parse CSV: {e}")
+
+
+def _handle_user_fetch(
+    public_key: str,
+    secret_key: str,
+    base_url: str,
+    envs: list[str] | None,
+    stats_page_limit: int,
+    stats_page_size: int,
+) -> None:
+    """Handle the fetch users button click."""
+    import pandas as pd
+
+    if not public_key or not secret_key or not base_url:
+        st.error("Missing LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY / LANGFUSE_BASE_URL")
+        return
+
+    debug_out: dict[str, Any] = {}
+    try:
+        headers = get_langfuse_headers(public_key, secret_key)
+        from_iso = datetime(2025, 9, 17, tzinfo=timezone.utc).isoformat()
+        first_seen_map = fetch_user_first_seen(
+            base_url=base_url,
+            headers=headers,
+            from_iso=from_iso,
+            envs=envs,
+            page_size=stats_page_size,
+            page_limit=stats_page_limit,
+            retry=3,
+            backoff=0.75,
+            debug_out=debug_out,
+        )
+        user_first_seen_df = pd.DataFrame(
+            [{"user_id": k, "first_seen": v} for k, v in (first_seen_map or {}).items()]
+        )
+        if len(user_first_seen_df):
+            user_first_seen_df["first_seen"] = pd.to_datetime(
+                user_first_seen_df["first_seen"], errors="coerce", utc=True
+            )
+            user_first_seen_df = user_first_seen_df.dropna(subset=["first_seen"])
+            user_first_seen_df = user_first_seen_df.sort_values("first_seen")
+        st.session_state.analytics_user_first_seen = user_first_seen_df
+        st.session_state.analytics_user_first_seen_debug = debug_out
+        st.toast(f"Fetched first-seen for {len(user_first_seen_df):,} users")
+        st.rerun()
+    except Exception as e:
+        st.session_state.analytics_user_first_seen_debug = debug_out
+        st.error(f"Could not fetch user first-seen: {e}")
+
+
+def _handle_user_invalidate(
+    base_url: str,
+    envs: list[str] | None,
+    stats_page_limit: int,
+    stats_page_size: int,
+) -> None:
+    """Handle the invalidate user cache button click."""
+    from_iso = datetime(2025, 9, 17, tzinfo=timezone.utc).isoformat()
+    removed = invalidate_user_first_seen_cache(
+        base_url=base_url,
+        from_iso=from_iso,
+        envs=envs,
+        page_size=stats_page_size,
+        page_limit=stats_page_limit,
+    )
+    st.session_state.analytics_user_first_seen = None
+    if removed:
+        st.toast("Cache cleared ✅")
+    else:
+        st.toast("No cache file found (cleared session cache) ⚠️")
+    st.rerun()

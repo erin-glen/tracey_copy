@@ -635,7 +635,7 @@ def fetch_traces_window(
             break
 
         page += 1
-        time_mod.sleep(0.05)
+        time_mod.sleep(0.01)
 
     if isinstance(debug_out, dict):
         if len(rows) >= max_traces:
@@ -834,7 +834,7 @@ def fetch_user_first_seen(
             break
 
         page += 1
-        time_mod.sleep(0.05)
+        time_mod.sleep(0.01)
 
     if isinstance(debug_out, dict):
         debug_out["users_found"] = int(len(first_seen))

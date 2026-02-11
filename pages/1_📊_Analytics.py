@@ -14,8 +14,6 @@ if not check_authentication():
 config = render_sidebar()
 
 render_analytics(
-    public_key=config["public_key"],
-    secret_key=config["secret_key"],
     base_url=config["base_url"],
     base_thread_url=config["base_thread_url"],
     gemini_api_key=config["gemini_api_key"],
@@ -23,6 +21,5 @@ render_analytics(
     start_date=config["start_date"],
     end_date=config["end_date"],
     envs=config["envs"],
-    stats_page_limit=config["stats_page_limit"],
     stats_max_traces=config["stats_max_traces"],
 )
