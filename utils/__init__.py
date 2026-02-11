@@ -58,6 +58,7 @@ from utils.shared_ui import (
     render_sidebar,
     get_app_config,
     configure_page,
+    render_glossary_popover,
 )
 from utils.charts import (
     daily_volume_chart,
@@ -212,4 +213,5 @@ __all__ = [
     "render_sidebar",
     "get_app_config",
     "configure_page",
+    "render_glossary_popover",
 ]

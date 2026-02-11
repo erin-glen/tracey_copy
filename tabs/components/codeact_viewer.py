@@ -16,6 +16,12 @@ _TEXT_PREVIEW_LIMIT = 1500
 _EXEC_PREVIEW_LIMIT = 1500
 
 
+VIEWER_GLOSSARY = {
+    "Final insight": "The last narrative summary produced from the CodeAct run (what a user would read as the takeaway).",
+    "Provenance": "Source URL(s) in raw_data used to compute results. Helps verify data origin and mixing.",
+}
+
+
 def _to_str(value: Any) -> str:
     return str(value or "").strip()
 
@@ -79,7 +85,7 @@ def _build_provenance_rows(raw_data: object) -> list[dict[str, str]]:
 
 
 def _render_charts_preview(charts: object) -> None:
-    st.markdown("### Charts preview")
+    st.subheader("Charts preview", help="Charts derived from charts_data (and/or output tables).")
     if not isinstance(charts, list) or not charts:
         st.info("No charts_data found.")
         return
@@ -138,10 +144,10 @@ def render_codeact_trace_viewer(
         st.write(f"time_start: `{_to_str(row.get('time_start'))}`")
         st.write(f"time_end: `{_to_str(row.get('time_end'))}`")
 
-    st.markdown("### QA summary")
+    st.subheader("QA summary", help="Deterministic flags and checks that indicate correctness risk.")
     final_insight = _to_str(row.get("codeact_final_insight"))
     if final_insight:
-        st.markdown("**Final insight**")
+        st.subheader("Final insight", help=VIEWER_GLOSSARY["Final insight"])
         st.write(final_insight)
 
     checks = []
@@ -162,7 +168,7 @@ def render_codeact_trace_viewer(
     else:
         st.write("None")
 
-    st.markdown("### Timeline")
+    st.subheader("Code timeline", help="Ordered parts: text output → code block → execution output.")
     output_obj = trace.get("output") if isinstance(trace, dict) else {}
     output_obj = output_obj if isinstance(output_obj, dict) else {}
     timeline = extract_codeact_timeline(output_obj)
@@ -189,7 +195,7 @@ def render_codeact_trace_viewer(
 
     _render_charts_preview(output_obj.get("charts_data"))
 
-    st.markdown("### Provenance")
+    st.subheader("Provenance", help=VIEWER_GLOSSARY["Provenance"])
     prov_rows = _build_provenance_rows(output_obj.get("raw_data"))
     if not prov_rows:
         st.info("No source_url records in raw_data.")
