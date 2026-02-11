@@ -10,11 +10,10 @@ from typing import Any
 
 import streamlit as st
 
-from utils.config_utils import normalize_langfuse_base_url, resolve_langfuse_config, resolve_app_password
+from utils.config_utils import resolve_app_password
 from utils.data_helpers import maybe_load_dotenv, iso_utc, csv_bytes_any, init_session_state
 from utils.langfuse_api import (
     clear_langfuse_disk_cache,
-    fetch_projects,
     fetch_traces_window,
     get_langfuse_headers,
 )
@@ -266,53 +265,18 @@ section[data-testid="stSidebar"] div[data-testid="stDownloadButton"] button:hove
             else:
                 st.caption("Fetch traces to populate request/response metadata.")
 
-        try:
-            secrets_map: Mapping[str, Any] = st.secrets
-        except Exception:
-            secrets_map = {}
-        resolved = resolve_langfuse_config(st.session_state, secrets_map, os.environ)
-
         with st.expander("🔐 Credentials", expanded=False):
             public_key = st.text_input(
                 "LANGFUSE_PUBLIC_KEY",
-                value=resolved["public_key"],
+                value=os.getenv("LANGFUSE_PUBLIC_KEY", ""),
                 key="langfuse_public_key_input",
             )
-            secret_key_override = st.text_input(
-                "LANGFUSE_SECRET_KEY (override)",
-                value="",
-                type="password",
-                key="langfuse_secret_key_override_input",
-            )
-            secret_key = str(secret_key_override or resolved["secret_key"])
-            secret_source = "override" if str(secret_key_override).strip() else resolved["sources"]["secret_key"]
-            st.caption(f"Secret key source: {secret_source}")
-
-            base_url_input = st.text_input(
+            secret_key = str(st.session_state.get("langfuse_secret_key") or os.getenv("LANGFUSE_SECRET_KEY", ""))
+            base_url = st.text_input(
                 "LANGFUSE_BASE_URL",
-                value=resolved["base_url"],
+                value=os.getenv("LANGFUSE_BASE_URL", ""),
                 key="langfuse_base_url_input",
             )
-            base_url = normalize_langfuse_base_url(base_url_input)
-            if base_url_input.strip() and base_url != base_url_input.strip().rstrip("/"):
-                st.caption(f"Normalized URL: {base_url}")
-
-            if st.button("🔌 Test Langfuse connection", key="langfuse_test_connection_btn"):
-                st.session_state["langfuse_cred_debug"] = {
-                    "base_url": base_url,
-                    "public_key_present": bool(str(public_key).strip()),
-                    "secret_key_present": bool(str(secret_key).strip()),
-                    "sources": {
-                        **resolved["sources"],
-                        "secret_key": secret_source,
-                    },
-                }
-                try:
-                    headers = get_langfuse_headers(public_key.strip(), secret_key.strip())
-                    projects = fetch_projects(base_url=base_url, headers=headers, http_timeout_s=10)
-                    st.success(f"Connected to Langfuse. Found {len(projects)} project(s).")
-                except Exception as e:
-                    st.error(f"Connection failed: {e}")
 
             gemini_override = st.text_input(
                 "BYO GEMINI_API_KEY (_optional_)",

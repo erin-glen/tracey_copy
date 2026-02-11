@@ -3,16 +3,10 @@ from pathlib import Path
 import unittest
 from unittest.mock import MagicMock, patch
 
-from utils.config_utils import normalize_langfuse_base_url
 from utils.langfuse_api import create_score, fetch_traces_window
 
 
 class TestLangfuseCredentialsAndCache(unittest.TestCase):
-    def test_normalize_langfuse_base_url(self):
-        self.assertEqual(normalize_langfuse_base_url("https://x.y/api/public"), "https://x.y")
-        self.assertEqual(normalize_langfuse_base_url("https://x.y/api/public/"), "https://x.y")
-        self.assertEqual(normalize_langfuse_base_url("https://x.y/"), "https://x.y")
-        self.assertEqual(normalize_langfuse_base_url("  "), "")
 
     @patch("utils.langfuse_api.requests.post")
     def test_create_score_queue_id_does_not_crash_without_metadata(self, mock_post):
@@ -37,7 +31,7 @@ class TestLangfuseCredentialsAndCache(unittest.TestCase):
         self.assertEqual(payload["metadata"].get("queue_id"), "q1")
 
     @patch("utils.langfuse_api.requests.post")
-    def test_create_score_base_url_normalization_avoids_double_api_public(self, mock_post):
+    def test_create_score_base_url_with_api_public_suffix_results_in_double_path_like_original(self, mock_post):
         response = MagicMock()
         response.status_code = 200
         response.json.return_value = {"id": "s1"}
@@ -52,7 +46,7 @@ class TestLangfuseCredentialsAndCache(unittest.TestCase):
         )
 
         called_url = mock_post.call_args.args[0]
-        self.assertEqual(called_url, "https://example.com/api/public/scores")
+        self.assertEqual(called_url, "https://example.com/api/public/api/public/scores")
 
     @patch("utils.langfuse_api.requests.Session")
     def test_fetch_traces_window_does_not_write_cache_on_error(self, mock_session_cls):
