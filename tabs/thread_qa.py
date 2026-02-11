@@ -13,6 +13,7 @@ from utils.content_kpis import build_thread_summary, compute_derived_interaction
 from utils.langfuse_api import create_annotation_queue_item, get_langfuse_headers, list_annotation_queues
 from utils.trace_parsing import normalize_trace_format
 from utils.data_helpers import csv_bytes_any, init_session_state
+from utils.docs_ui import render_page_help, metric_with_help
 
 
 def _truncate(val: object, n: int = 160) -> str:
@@ -75,6 +76,8 @@ def render(public_key: str, secret_key: str, base_url: str, base_thread_url: str
     st.subheader("🧵 Thread QA")
     st.caption("Thread-level QA rollups derived deterministically from the currently loaded traces.")
 
+    render_page_help("thread_qa", expanded=False)
+
     threads_count = len(thread_df)
     ended_nui_count = int(thread_df["ended_after_needs_user_input"].sum()) if threads_count else 0
     ended_err_count = int(thread_df["ended_after_error"].sum()) if threads_count else 0
@@ -82,11 +85,28 @@ def render(public_key: str, secret_key: str, base_url: str, base_thread_url: str
     median_turns = float(thread_df["n_turns"].median()) if threads_count else 0.0
 
     m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("Threads", f"{threads_count}")
-    m2.metric("Ended after needs input", f"{ended_nui_count}", f"{(ended_nui_count / threads_count * 100):.1f}%" if threads_count else "0.0%")
-    m3.metric("Ended after error", f"{ended_err_count}", f"{(ended_err_count / threads_count * 100):.1f}%" if threads_count else "0.0%")
-    m4.metric("Never complete", f"{never_complete_count}")
-    m5.metric("Median turns/thread", f"{median_turns:.1f}")
+    with m1:
+        metric_with_help("Threads", f"{threads_count}", metric_id="threads_total", key="threadqa_threads_total")
+    with m2:
+        metric_with_help(
+            "Ended after needs input",
+            f"{ended_nui_count}",
+            metric_id="threads_ended_after_needs_input",
+            delta=f"{(ended_nui_count / threads_count * 100):.1f}%" if threads_count else "0.0%",
+            key="threadqa_ended_nui",
+        )
+    with m3:
+        metric_with_help(
+            "Ended after error",
+            f"{ended_err_count}",
+            metric_id="threads_ended_after_error",
+            delta=f"{(ended_err_count / threads_count * 100):.1f}%" if threads_count else "0.0%",
+            key="threadqa_ended_err",
+        )
+    with m4:
+        metric_with_help("Never complete", f"{never_complete_count}", metric_id="threads_never_complete", key="threadqa_never_complete")
+    with m5:
+        metric_with_help("Median turns/thread", f"{median_turns:.1f}", metric_id="median_turns_per_thread", key="threadqa_median_turns")
 
     with st.expander("Filters", expanded=True):
         only_ended_nui = st.checkbox("Only threads that ended after needs_user_input", value=False)

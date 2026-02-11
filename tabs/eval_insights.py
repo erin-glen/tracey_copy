@@ -15,6 +15,8 @@ from utils import (
     init_session_state,
 )
 
+from utils.docs_ui import render_page_help, metric_with_help
+
 
 def render(
     public_key: str,
@@ -26,6 +28,8 @@ def render(
     st.caption(
         "Select an evaluation queue to view scoring insights, completion rates, and performance metrics."
     )
+
+    render_page_help("eval_insights", expanded=False)
 
     init_session_state({
         "eval_insights_queue_id": "",
@@ -278,11 +282,26 @@ def _render_completion_section(metrics: dict[str, Any], queue_items: list[dict[s
 
     col_a, col_b, col_c = st.columns(3)
     with col_a:
-        st.metric("Completed", metrics["completed_items"])
+        metric_with_help(
+            "Completed",
+            metrics["completed_items"],
+            metric_id="queue_completed_items",
+            key="eval_completed_items",
+        )
     with col_b:
-        st.metric("Pending", metrics["pending_items"])
+        metric_with_help(
+            "Pending",
+            metrics["pending_items"],
+            metric_id="queue_pending_items",
+            key="eval_pending_items",
+        )
     with col_c:
-        st.metric("Completion Rate", f"{metrics['completion_rate']:.1f}%")
+        metric_with_help(
+            "Completion Rate",
+            f"{metrics['completion_rate']:.1f}%",
+            metric_id="queue_completion_rate",
+            key="eval_completion_rate",
+        )
 
     # Progress bar
     st.progress(metrics["completion_rate"] / 100)
@@ -310,27 +329,39 @@ def _render_outcome_rates_section(df: pd.DataFrame, metrics: dict[str, Any]) -> 
 
     col_a, col_b, col_c, col_d = st.columns(4)
     with col_a:
-        st.metric("Accuracy", f"{metrics['accuracy']:.1f}%", delta_arrow="off")
+        metric_with_help(
+            "Accuracy",
+            f"{metrics['accuracy']:.1f}%",
+            metric_id="eval_accuracy",
+            delta_arrow="off",
+            key="eval_accuracy",
+        )
     with col_b:
-        st.metric(
+        metric_with_help(
             "Pass Rate",
             f"{metrics['pass_rate']:.1f}%",
+            metric_id="eval_pass_rate",
             delta=f"{metrics['pass_count']} scores",
             delta_arrow="off",
+            key="eval_pass_rate",
         )
     with col_c:
-        st.metric(
+        metric_with_help(
             "Fail Rate",
             f"{metrics['fail_rate']:.1f}%",
+            metric_id="eval_fail_rate",
             delta=f"{metrics['fail_count']} scores",
             delta_arrow="off",
+            key="eval_fail_rate",
         )
     with col_d:
-        st.metric(
+        metric_with_help(
             "Unsure Rate",
             f"{metrics['unsure_rate']:.1f}%",
+            metric_id="eval_unsure_rate",
             delta=f"{metrics['unsure_count']} scores",
             delta_arrow="off",
+            key="eval_unsure_rate",
         )
 
     left, right = st.columns([1, 2])
@@ -496,10 +527,25 @@ def _render_temporal_insights(df: pd.DataFrame) -> None:
     # Summary stats
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric("First Evaluation", str(df_time["datetime"].min().date()))
+        metric_with_help(
+            "First Evaluation",
+            str(df_time["datetime"].min().date()),
+            metric_id="first_evaluation_date",
+            key="eval_first_date",
+        )
     with col2:
-        st.metric("Last Evaluation", str(df_time["datetime"].max().date()))
+        metric_with_help(
+            "Last Evaluation",
+            str(df_time["datetime"].max().date()),
+            metric_id="last_evaluation_date",
+            key="eval_last_date",
+        )
     with col3:
         days_active = (df_time["datetime"].max() - df_time["datetime"].min()).days + 1
         avg_per_day = len(df_time) / max(1, days_active)
-        st.metric("Avg per Day", f"{avg_per_day:.1f}")
+        metric_with_help(
+            "Avg per Day",
+            f"{avg_per_day:.1f}",
+            metric_id="avg_evaluations_per_day",
+            key="eval_avg_per_day",
+        )

@@ -11,6 +11,7 @@ from utils.codeact_qaqc import add_codeact_qaqc_columns, build_codeact_template_
 from utils.codeact_utils import iter_decoded_codeact_parts, redact_secrets, truncate_text as codeact_truncate_text
 from utils.content_kpis import compute_derived_interactions
 from utils.trace_parsing import normalize_trace_format
+from utils.docs_ui import render_page_help, metric_with_help
 
 
 def _trace_fingerprint(traces: list[dict]) -> str:
@@ -34,6 +35,8 @@ def _thread_link(base_thread_url: str, session_id: str) -> str:
 def render(base_thread_url: str) -> None:
     st.title("🧩 CodeAct Templates")
     st.caption("Deterministic template clustering and parameter-consistency QA for CodeAct traces.")
+
+    render_page_help("codeact_templates", expanded=False)
 
     traces = st.session_state.get("stats_traces") or []
     if not traces:
@@ -79,9 +82,17 @@ def render(base_thread_url: str) -> None:
     issue_rate = float(codeact_df.get("codeact_consistency_issue", False).fillna(False).astype(bool).mean()) if n_codeact else 0.0
 
     c1, c2, c3 = st.columns(3)
-    c1.metric("CodeAct traces", n_codeact)
-    c2.metric("Templates", n_templates)
-    c3.metric("Consistency issue rate", f"{issue_rate * 100:.1f}%")
+    with c1:
+        metric_with_help("CodeAct traces", n_codeact, metric_id="codeact_traces", key="codeact_n_traces")
+    with c2:
+        metric_with_help("Templates", n_templates, metric_id="codeact_templates", key="codeact_n_templates")
+    with c3:
+        metric_with_help(
+            "Consistency issue rate",
+            f"{issue_rate * 100:.1f}%",
+            metric_id="codeact_consistency_issue_rate",
+            key="codeact_issue_rate",
+        )
 
     if n_codeact:
         by_intent = (

@@ -34,6 +34,7 @@ Quickly pull and explore traces from Langfuse. _Ta, Trace!_
 | 🧠 **Product Intelligence** | AI-powered insights and pattern discovery |
 | 🔎 **Trace Explorer** | Browse and filter individual traces |
 | 🔗 **Conversation Browser** | View full conversation threads |
+| 📚 **Metrics Glossary** | Definitions, formulas, and provenance for all KPIs |
 
 ### Current Session
 

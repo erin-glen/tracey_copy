@@ -15,6 +15,7 @@ from utils.langfuse_api import create_annotation_queue_item, get_langfuse_header
 from utils.sample_packs import SAMPLE_PACKS, add_codeact_snippets_for_pack, build_sample_pack_df
 from utils.trace_parsing import normalize_trace_format
 from utils.data_helpers import init_session_state
+from utils.docs_ui import render_page_help, metric_with_help
 
 
 def _trace_fingerprint(traces: list[dict]) -> str:
@@ -31,6 +32,8 @@ def render(public_key: str, secret_key: str, base_url: str, base_thread_url: str
     """Render deterministic QA sample pack workflow."""
     st.subheader("📦 QA Sample Packs")
     st.caption("Deterministic sample packs that mirror the pipeline’s sample CSV outputs.")
+
+    render_page_help("qa_samples", expanded=False)
 
     init_session_state(
         {
@@ -88,8 +91,20 @@ def render(public_key: str, secret_key: str, base_url: str, base_thread_url: str
     preset_id = SAMPLE_PACKS[pack_id]["preset_id"]
     uncapped_count = int(build_preset_mask(derived, preset_id).sum())
     c1, c2 = st.columns(2)
-    c1.metric("Candidates (uncapped)", uncapped_count)
-    c2.metric("Rows in export", len(pack_df))
+    with c1:
+        metric_with_help(
+            "Candidates (uncapped)",
+            uncapped_count,
+            metric_id="qa_pack_candidates_uncapped",
+            key="qa_samples_uncapped",
+        )
+    with c2:
+        metric_with_help(
+            "Rows in export",
+            len(pack_df),
+            metric_id="qa_pack_rows_in_export",
+            key="qa_samples_rows",
+        )
 
     preview_df = pack_df.head(200).copy()
     if "sessionId" in preview_df.columns:

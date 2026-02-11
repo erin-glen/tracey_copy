@@ -40,6 +40,8 @@ from utils import (
     reasoning_tokens_histogram,
 )
 
+from utils.docs_ui import render_page_help, metric_with_help
+
 
 def render(
     public_key: str,
@@ -78,6 +80,8 @@ def render(
         "Explore aggregate volume, outcomes, latency, cost, languages, tool usage, and errors across the currently loaded traces. "
         "Use filters and exports to share a report with others."
     )
+
+    render_page_help("analytics", expanded=False)
 
     st.markdown(
         """
@@ -305,6 +309,67 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
     p95_cost = float(cost_s.quantile(0.95)) if len(cost_s) else 0.0
     avg_latency = float(lat_s.mean()) if len(lat_s) else 0.0
     p95_latency = float(lat_s.quantile(0.95)) if len(lat_s) else 0.0
+
+    st.markdown("### Headline KPIs")
+    k1, k2, k3, k4 = st.columns(4)
+    with k1:
+        metric_with_help(
+            "Total traces",
+            f"{total_traces:,}",
+            metric_id="total_traces",
+            key="analytics_total_traces",
+        )
+    with k2:
+        metric_with_help(
+            "Unique threads",
+            f"{unique_threads:,}",
+            metric_id="unique_threads",
+            key="analytics_unique_threads",
+        )
+    with k3:
+        metric_with_help(
+            "Unique users",
+            f"{unique_users:,}",
+            metric_id="unique_users",
+            key="analytics_unique_users",
+        )
+    with k4:
+        metric_with_help(
+            "Success rate",
+            f"{success_rate:.1%}",
+            metric_id="success_rate",
+            key="analytics_success_rate",
+        )
+
+    k5, k6, k7, k8 = st.columns(4)
+    with k5:
+        metric_with_help(
+            "Error rate",
+            f"{error_rate:.1%}",
+            metric_id="error_rate",
+            key="analytics_error_rate",
+        )
+    with k6:
+        metric_with_help(
+            "Mean latency",
+            f"{avg_latency:.2f}s",
+            metric_id="mean_latency",
+            key="analytics_mean_latency",
+        )
+    with k7:
+        metric_with_help(
+            "P95 latency",
+            f"{p95_latency:.2f}s",
+            metric_id="p95_latency",
+            key="analytics_p95_latency",
+        )
+    with k8:
+        metric_with_help(
+            "Mean cost",
+            f"${mean_cost:.4f}",
+            metric_id="mean_cost",
+            key="analytics_mean_cost",
+        )
 
     st.markdown(
         f"### Summary Statistics ({(end_date - start_date).days + 1} days: {start_date_label} to {end_date_label})"
