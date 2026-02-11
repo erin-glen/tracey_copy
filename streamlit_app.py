@@ -24,8 +24,6 @@ st.markdown(
 **Tracey** is a trace analysis and human evaluation tool for Global Nature Watch.
 Quickly pull and explore traces from Langfuse. _Ta, Trace!_
 
-THIS IS A TEST 
-
 ### 🛠️ What's in the toolkit?
 
 | Tool | Description |
