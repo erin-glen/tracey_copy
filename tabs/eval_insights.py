@@ -165,8 +165,6 @@ def render(
     st.divider()
 
     _render_flagged_for_removal_section(
-        base_url=base_url,
-        headers=headers,
         df=df,
     )
 
@@ -223,8 +221,6 @@ def _build_scores_dataframe(scores: list[dict[str, Any]]) -> pd.DataFrame:
 
 def _render_flagged_for_removal_section(
     *,
-    base_url: str,
-    headers: dict[str, str],
     df: pd.DataFrame,
 ) -> None:
     flagged_df = df[df.get("flagged_for_removal", False) == True] if "flagged_for_removal" in df.columns else df.iloc[0:0]
@@ -238,11 +234,16 @@ def _render_flagged_for_removal_section(
         st.caption("No items have been flagged for removal.")
         return
 
-    display_cols = ["score_id", "trace_id", "evaluator", "value", "comment", "timestamp"]
+    ## st.button to navigat to LF score page
+    url = "https://langfuse.globalnaturewatch.org/project/wri_lcl/scores"
+    st.link_button("🔗 View flagged items in Langfuse", url)
+
+    display_cols = ["score_id", "evaluator", "value", "comment", "timestamp"]
     available_cols = [c for c in display_cols if c in flagged_df.columns]
     if available_cols:
         with st.expander(f"View flagged items ({len(flagged_df)})", expanded=False):
             st.dataframe(flagged_df[available_cols], hide_index=True, width="stretch")
+
 
 def _calculate_metrics(df: pd.DataFrame, queue_items: list[dict[str, Any]]) -> dict[str, Any]:
     """Calculate all metrics from scores DataFrame."""
