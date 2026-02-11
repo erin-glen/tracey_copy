@@ -12,6 +12,8 @@ from urllib.parse import urlencode
 
 import requests
 
+from utils.config_utils import normalize_langfuse_base_url
+
 try:
     import streamlit as st
     HAS_STREAMLIT = True
@@ -71,6 +73,22 @@ def get_langfuse_headers(public_key: str, secret_key: str) -> dict[str, str]:
     return {"Authorization": f"Basic {auth}"}
 
 
+def _auth_namespace_from_headers(headers: dict[str, str]) -> str:
+    """Build a short auth namespace from Basic auth public key without storing credentials."""
+    try:
+        authorization = str(headers.get("Authorization") or "")
+        if not authorization.startswith("Basic "):
+            return ""
+        encoded = authorization.split(" ", 1)[1].strip()
+        decoded = base64.b64decode(encoded).decode("utf-8")
+        public_key, _ = decoded.split(":", 1)
+        if not public_key.strip():
+            return ""
+        return hashlib.sha256(public_key.encode("utf-8")).hexdigest()[:8]
+    except Exception:
+        return ""
+
+
 def fetch_score_configs(
     *,
     base_url: str,
@@ -79,7 +97,8 @@ def fetch_score_configs(
     limit: int = 100,
     http_timeout_s: float = 30,
 ) -> list[dict[str, Any]]:
-    url = f"{base_url.rstrip('/')}/api/public/score-configs"
+    base = normalize_langfuse_base_url(base_url)
+    url = f"{base}/api/public/score-configs"
     params = {"page": int(page), "limit": int(limit)}
     r = requests.get(url, headers=headers, params=params, timeout=float(http_timeout_s))
     _log_http(method="GET", url=url, params=params, json_payload=None, response=r)
@@ -101,7 +120,8 @@ def get_annotation_queue_item(
     item_id: str,
     http_timeout_s: float = 30,
 ) -> dict[str, Any]:
-    url = f"{base_url.rstrip('/')}/api/public/annotation-queues/{queue_id}/items/{item_id}"
+    base = normalize_langfuse_base_url(base_url)
+    url = f"{base}/api/public/annotation-queues/{queue_id}/items/{item_id}"
     r = requests.get(url, headers=headers, timeout=float(http_timeout_s))
     _log_http(method="GET", url=url, params=None, json_payload=None, response=r)
     r.raise_for_status()
@@ -116,7 +136,8 @@ def get_annotation_queue(
     queue_id: str,
     http_timeout_s: float = 30,
 ) -> dict[str, Any]:
-    url = f"{base_url.rstrip('/')}/api/public/annotation-queues/{queue_id}"
+    base = normalize_langfuse_base_url(base_url)
+    url = f"{base}/api/public/annotation-queues/{queue_id}"
     r = requests.get(url, headers=headers, timeout=float(http_timeout_s))
     _log_http(method="GET", url=url, params=None, json_payload=None, response=r)
     r.raise_for_status()
@@ -134,7 +155,8 @@ def list_annotation_queue_items(
     limit: int = 100,
     http_timeout_s: float = 30,
 ) -> list[dict[str, Any]]:
-    url = f"{base_url.rstrip('/')}/api/public/annotation-queues/{queue_id}/items"
+    base = normalize_langfuse_base_url(base_url)
+    url = f"{base}/api/public/annotation-queues/{queue_id}/items"
     params: dict[str, Any] = {"page": int(page), "limit": int(limit)}
     if status is not None and str(status).strip():
         params["status"] = str(status)
@@ -158,7 +180,8 @@ def list_annotation_queues(
     limit: int = 100,
     http_timeout_s: float = 30,
 ) -> list[dict[str, Any]]:
-    url = f"{base_url.rstrip('/')}/api/public/annotation-queues"
+    base = normalize_langfuse_base_url(base_url)
+    url = f"{base}/api/public/annotation-queues"
     params = {"page": int(page), "limit": int(limit)}
     r = requests.get(url, headers=headers, params=params, timeout=float(http_timeout_s))
     _log_http(method="GET", url=url, params=params, json_payload=None, response=r)
@@ -181,7 +204,8 @@ def create_annotation_queue(
     description: str | None = None,
     http_timeout_s: float = 30,
 ) -> dict[str, Any]:
-    url = f"{base_url.rstrip('/')}/api/public/annotation-queues"
+    base = normalize_langfuse_base_url(base_url)
+    url = f"{base}/api/public/annotation-queues"
     payload: dict[str, Any] = {
         "name": str(name),
         "scoreConfigIds": [str(x) for x in score_config_ids if str(x).strip()],
@@ -205,7 +229,8 @@ def create_annotation_queue_item(
     status: str | None = None,
     http_timeout_s: float = 30,
 ) -> dict[str, Any]:
-    url = f"{base_url.rstrip('/')}/api/public/annotation-queues/{queue_id}/items"
+    base = normalize_langfuse_base_url(base_url)
+    url = f"{base}/api/public/annotation-queues/{queue_id}/items"
     payload: dict[str, Any] = {
         "objectId": str(object_id),
         "objectType": str(object_type),
@@ -228,7 +253,8 @@ def update_annotation_queue_item(
     status: str,
     http_timeout_s: float = 30,
 ) -> dict[str, Any]:
-    url = f"{base_url.rstrip('/')}/api/public/annotation-queues/{queue_id}/items/{item_id}"
+    base = normalize_langfuse_base_url(base_url)
+    url = f"{base}/api/public/annotation-queues/{queue_id}/items/{item_id}"
     payload: dict[str, Any] = {"status": str(status)}
     r = requests.patch(url, headers=headers, json=payload, timeout=float(http_timeout_s))
     _log_http(method="PATCH", url=url, params=None, json_payload=payload, response=r)
@@ -243,7 +269,8 @@ def fetch_projects(
     headers: dict[str, str],
     http_timeout_s: float = 30,
 ) -> list[dict[str, Any]]:
-    url = f"{base_url.rstrip('/')}/api/public/projects"
+    base = normalize_langfuse_base_url(base_url)
+    url = f"{base}/api/public/projects"
     r = requests.get(url, headers=headers, timeout=float(http_timeout_s))
     r.raise_for_status()
     data = r.json()
@@ -270,7 +297,8 @@ def create_score(
     score_id: str | None = None,
     http_timeout_s: float = 30,
 ) -> dict[str, Any]:
-    url = f"{base_url.rstrip('/')}/api/public/scores"
+    base = normalize_langfuse_base_url(base_url)
+    url = f"{base}/api/public/scores"
     payload: dict[str, Any] = {
         "name": str(name),
         "value": value,
@@ -283,12 +311,14 @@ def create_score(
     if comment is not None:
         payload["comment"] = str(comment)
     if metadata is not None:
-        payload["metadata"] = metadata
+        payload["metadata"] = metadata if isinstance(metadata, dict) else {"_raw": metadata}
     if config_id is not None and str(config_id).strip():
         payload["configId"] = str(config_id)
     if queue_id is not None and str(queue_id).strip():
         payload["queueId"] = str(queue_id)
-        payload["metadata"]['queue_id'] = str(queue_id)
+        if not isinstance(payload.get("metadata"), dict):
+            payload["metadata"] = {}
+        payload["metadata"]["queue_id"] = str(queue_id)
     payload["source"] = "API"
 
     r = requests.post(url, headers=headers, json=payload, timeout=float(http_timeout_s))
@@ -355,7 +385,8 @@ def delete_score(
     score_id: str,
     http_timeout_s: float = 30,
 ) -> None:
-    url = f"{base_url.rstrip('/')}/api/public/scores/{score_id}"
+    base = normalize_langfuse_base_url(base_url)
+    url = f"{base}/api/public/scores/{score_id}"
     r = requests.delete(url, headers=headers, timeout=float(http_timeout_s))
     _log_http(method="DELETE", url=url, params=None, json_payload=None, response=r)
     if r.status_code in (200, 204, 404):
@@ -377,7 +408,8 @@ def fetch_scores_by_queue(
     Returns a tuple of (scores_list, metadata_dict).
     Metadata includes totalCount and pagination info.
     """
-    url = f"{base_url.rstrip('/')}/api/public/v2/scores"
+    base = normalize_langfuse_base_url(base_url)
+    url = f"{base}/api/public/v2/scores"
     all_scores: list[dict[str, Any]] = []
     meta: dict[str, Any] = {"totalCount": 0, "page": page, "limit": limit}
     
@@ -445,6 +477,28 @@ def _try_write_cache(path: Path, data: Any) -> None:
         return
 
 
+def clear_langfuse_disk_cache(cache_dir: str | None = None) -> dict[str, Any]:
+    """Clear Langfuse disk cache files without raising exceptions."""
+    cache_root = Path(cache_dir) if isinstance(cache_dir, str) and cache_dir.strip() else _default_cache_dir()
+    files_removed = 0
+    errors = 0
+
+    try:
+        if cache_root.exists():
+            for path in cache_root.rglob("*"):
+                if not path.is_file():
+                    continue
+                try:
+                    path.unlink()
+                    files_removed += 1
+                except Exception:
+                    errors += 1
+    except Exception:
+        errors += 1
+
+    return {"cache_root": str(cache_root), "files_removed": files_removed, "errors": errors}
+
+
 def fetch_traces_window(
     *,
     base_url: str,
@@ -463,20 +517,22 @@ def fetch_traces_window(
     cache_dir: str | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch traces from Langfuse within a time window with pagination."""
-    url = f"{base_url.rstrip('/')}/api/public/traces"
+    normalized_base = normalize_langfuse_base_url(base_url)
+    url = f"{normalized_base}/api/public/traces"
     rows: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
 
     cache_root = Path(cache_dir) if isinstance(cache_dir, str) and cache_dir.strip() else _default_cache_dir()
     cache_payload = {
         "kind": "fetch_traces_window",
-        "base_url": base_url,
+        "base_url": normalized_base,
         "from_iso": from_iso,
         "to_iso": to_iso,
         "envs": envs or [],
         "page_size": int(page_size),
         "page_limit": int(page_limit),
         "max_traces": int(max_traces),
+        "auth_ns": _auth_namespace_from_headers(headers),
     }
     cache_path = _cache_path("traces", cache_payload, cache_root)
     if use_disk_cache:
@@ -517,6 +573,7 @@ def fetch_traces_window(
             }
         )
 
+    stopped_early = False
     while page <= page_limit and len(rows) < max_traces:
         params: dict[str, Any] = {
             "fromTimestamp": from_iso,
@@ -589,6 +646,7 @@ def fetch_traces_window(
                     st.warning(f"Stopping fetch early: {last_error}")
                 except Exception:
                     pass
+            stopped_early = True
             break
 
         data: Any
@@ -632,7 +690,7 @@ def fetch_traces_window(
         page += 1
         time_mod.sleep(0.05)
 
-    if use_disk_cache:
+    if use_disk_cache and not stopped_early:
         _try_write_cache(cache_path, rows)
         if isinstance(debug_out, dict):
             debug_out["cache_hit"] = False
@@ -648,7 +706,8 @@ def fetch_trace(
     trace_id: str,
     http_timeout_s: float = 30,
 ) -> dict[str, Any]:
-    url = f"{base_url.rstrip('/')}/api/public/traces/{trace_id}"
+    base = normalize_langfuse_base_url(base_url)
+    url = f"{base}/api/public/traces/{trace_id}"
     r = requests.get(url, headers=headers, timeout=float(http_timeout_s))
     r.raise_for_status()
     out = r.json()
@@ -676,14 +735,15 @@ def fetch_user_first_seen(
     Returns a mapping of userId -> first timestamp (ISO string) seen in the scan.
     """
 
-    url = f"{base_url.rstrip('/')}/api/public/traces"
+    base = normalize_langfuse_base_url(base_url)
+    url = f"{base}/api/public/traces"
     session = requests.Session()
 
     cache_root = Path(cache_dir) if isinstance(cache_dir, str) and cache_dir.strip() else _default_cache_dir()
     cache_payload = {
         "kind": "fetch_user_first_seen",
         "cache_day": date.today().isoformat(),
-        "base_url": base_url,
+        "base_url": base,
         "from_iso": from_iso,
         "envs": envs or [],
         "page_size": int(page_size),
@@ -837,7 +897,7 @@ def user_first_seen_cache_path(
     cache_payload = {
         "kind": "fetch_user_first_seen",
         "cache_day": date.today().isoformat(),
-        "base_url": base_url,
+        "base_url": normalize_langfuse_base_url(base_url),
         "from_iso": from_iso,
         "envs": envs or [],
         "page_size": int(page_size),

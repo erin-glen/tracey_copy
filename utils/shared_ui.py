@@ -5,12 +5,19 @@ import hmac
 import inspect
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, time, timedelta, timezone
+from collections.abc import Mapping
 from typing import Any
 
 import streamlit as st
 
+from utils.config_utils import normalize_langfuse_base_url, resolve_langfuse_config
 from utils.data_helpers import maybe_load_dotenv, iso_utc, csv_bytes_any, init_session_state
-from utils.langfuse_api import fetch_traces_window, get_langfuse_headers
+from utils.langfuse_api import (
+    clear_langfuse_disk_cache,
+    fetch_projects,
+    fetch_traces_window,
+    get_langfuse_headers,
+)
 from utils.trace_parsing import (
     normalize_trace_format,
     current_human_prompt,
@@ -248,18 +255,54 @@ section[data-testid="stSidebar"] div[data-testid="stDownloadButton"] button:hove
             else:
                 st.caption("Fetch traces to populate request/response metadata.")
 
+        try:
+            secrets_map: Mapping[str, Any] = st.secrets
+        except Exception:
+            secrets_map = {}
+        resolved = resolve_langfuse_config(st.session_state, secrets_map, os.environ)
+
         with st.expander("🔐 Credentials", expanded=False):
             public_key = st.text_input(
                 "LANGFUSE_PUBLIC_KEY",
-                value=os.getenv("LANGFUSE_PUBLIC_KEY", ""),
+                value=resolved["public_key"],
                 key="langfuse_public_key_input",
             )
-            secret_key = str(st.session_state.get("langfuse_secret_key") or os.getenv("LANGFUSE_SECRET_KEY", ""))
-            base_url = st.text_input(
+            secret_key_override = st.text_input(
+                "LANGFUSE_SECRET_KEY (override)",
+                value="",
+                type="password",
+                key="langfuse_secret_key_override_input",
+            )
+            secret_key = str(secret_key_override or resolved["secret_key"])
+            secret_source = "override" if str(secret_key_override).strip() else resolved["sources"]["secret_key"]
+            st.caption(f"Secret key source: {secret_source}")
+
+            base_url_input = st.text_input(
                 "LANGFUSE_BASE_URL",
-                value=os.getenv("LANGFUSE_BASE_URL", ""),
+                value=resolved["base_url"],
                 key="langfuse_base_url_input",
             )
+            base_url = normalize_langfuse_base_url(base_url_input)
+            if base_url_input.strip() and base_url != base_url_input.strip().rstrip("/"):
+                st.caption(f"Normalized URL: {base_url}")
+
+            if st.button("🔌 Test Langfuse connection", key="langfuse_test_connection_btn"):
+                st.session_state["langfuse_cred_debug"] = {
+                    "base_url": base_url,
+                    "public_key_present": bool(str(public_key).strip()),
+                    "secret_key_present": bool(str(secret_key).strip()),
+                    "sources": {
+                        **resolved["sources"],
+                        "secret_key": secret_source,
+                    },
+                }
+                try:
+                    headers = get_langfuse_headers(public_key.strip(), secret_key.strip())
+                    projects = fetch_projects(base_url=base_url, headers=headers, http_timeout_s=10)
+                    st.success(f"Connected to Langfuse. Found {len(projects)} project(s).")
+                except Exception as e:
+                    st.error(f"Connection failed: {e}")
+
             gemini_override = st.text_input(
                 "BYO GEMINI_API_KEY (_optional_)",
                 value="",
@@ -308,6 +351,26 @@ section[data-testid="stSidebar"] div[data-testid="stDownloadButton"] button:hove
                 key="stats_parallel_workers",
                 help="Number of weekly chunks to fetch in parallel.",
             )
+
+        with st.expander("🧰 Cache", expanded=False):
+            st.checkbox("Use disk cache", value=True, key="stats_use_disk_cache")
+            if st.button("🧹 Clear Langfuse disk cache", key="clear_langfuse_disk_cache_btn"):
+                result = clear_langfuse_disk_cache()
+                st.success(
+                    f"Cleared Langfuse disk cache ({result.get('files_removed', 0)} files removed, "
+                    f"{result.get('errors', 0)} errors)."
+                )
+                st.session_state.pop("fetch_debug", None)
+                st.session_state.stats_traces = []
+                st.session_state.pop("content_kpis_df", None)
+                st.session_state.pop("content_kpis_derived", None)
+                st.session_state.pop("content_kpis_summary", None)
+                st.session_state.pop("content_kpis_slices", None)
+                st.session_state.pop("thread_qa_thread_df", None)
+                st.session_state.pop("thread_qa_fingerprint", None)
+                st.session_state.pop("codeact_qaqc_df", None)
+                st.session_state.pop("codeact_qaqc_fingerprint", None)
+                st.rerun()
 
         base_thread_url = f"https://www.{'staging.' if environment == 'staging' else ''}globalnaturewatch.org/app/threads"
 
@@ -432,6 +495,7 @@ def _fetch_chunked(
     supports_debug_out = bool(sig and "debug_out" in sig.parameters)
     supports_page_size = bool(sig and "page_size" in sig.parameters)
     supports_http_timeout = bool(sig and "http_timeout_s" in sig.parameters)
+    supports_use_disk_cache = bool(sig and "use_disk_cache" in sig.parameters)
 
     def fetch_chunk(chunk_info: tuple[int, date, date]) -> tuple[int, date, date, list[dict[str, Any]], dict[str, Any]]:
         chunk_idx, chunk_start, chunk_end = chunk_info
@@ -456,6 +520,8 @@ def _fetch_chunked(
             call_kwargs["http_timeout_s"] = stats_http_timeout_s
         if supports_debug_out:
             call_kwargs["debug_out"] = chunk_debug
+        if supports_use_disk_cache:
+            call_kwargs["use_disk_cache"] = st.session_state.get("stats_use_disk_cache", True)
 
         chunk_traces = fetch_traces_window(**call_kwargs)
         return (chunk_idx, chunk_start, chunk_end, chunk_traces, chunk_debug)
@@ -536,6 +602,7 @@ def _fetch_single(
         supports_debug_out = bool(sig and "debug_out" in sig.parameters)
         supports_page_size = bool(sig and "page_size" in sig.parameters)
         supports_http_timeout = bool(sig and "http_timeout_s" in sig.parameters)
+        supports_use_disk_cache = bool(sig and "use_disk_cache" in sig.parameters)
 
         call_kwargs: dict[str, Any] = {
             "base_url": base_url,
@@ -554,6 +621,8 @@ def _fetch_single(
             call_kwargs["http_timeout_s"] = stats_http_timeout_s
         if supports_debug_out:
             call_kwargs["debug_out"] = fetch_debug
+        if supports_use_disk_cache:
+            call_kwargs["use_disk_cache"] = st.session_state.get("stats_use_disk_cache", True)
 
         traces = fetch_traces_window(**call_kwargs)
         fetch_status.status(f"Fetched {len(traces)} traces", state="complete", expanded=False)
