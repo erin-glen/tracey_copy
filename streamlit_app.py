@@ -3,7 +3,6 @@
 This is the home page for the multipage Streamlit app.
 Navigate to other pages using the sidebar.
 
-TEST MESSAGE
 """
 
 import streamlit as st
@@ -24,6 +23,8 @@ st.markdown(
     """
 **Tracey** is a trace analysis and human evaluation tool for Global Nature Watch.
 Quickly pull and explore traces from Langfuse. _Ta, Trace!_
+
+THIS IS A TEST 
 
 ### 🛠️ What's in the toolkit?
 
