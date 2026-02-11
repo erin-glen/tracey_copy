@@ -91,3 +91,28 @@ def resolve_langfuse_config(
             "base_url": base_source,
         },
     }
+
+
+
+def resolve_app_password(
+    session: Mapping[str, Any] | None,
+    secrets: Mapping[str, Any] | None,
+    env: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Resolve application password from session, secrets, and environment sources."""
+    session_map = session if isinstance(session, Mapping) else {}
+    secrets_map = secrets if isinstance(secrets, Mapping) else {}
+    env_map = env if isinstance(env, Mapping) else {}
+
+    password, source = _resolve_value(
+        [
+            ("session", session_map.get("app_password")),
+            ("secrets", secrets_map.get("APP_PASSWORD")),
+            ("secrets", get_nested(secrets_map, ("auth", "password"))),
+            ("secrets", get_nested(secrets_map, ("auth", "APP_PASSWORD"))),
+            ("secrets", secrets_map.get("password")),
+            ("env", env_map.get("APP_PASSWORD")),
+        ]
+    )
+
+    return {"password": password, "source": source}
