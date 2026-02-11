@@ -2,6 +2,8 @@
 
 This is the home page for the multipage Streamlit app.
 Navigate to other pages using the sidebar.
+
+TEST MESSAGE
 """
 
 import streamlit as st
