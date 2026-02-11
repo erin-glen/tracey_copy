@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import re
 from collections import Counter
 from datetime import datetime, timezone
@@ -17,6 +16,7 @@ from utils.trace_parsing import (
     parse_trace_dt,
     slice_output_to_current_turn,
 )
+from utils.codeact_utils import decode_maybe_base64
 
 SCORED_INTENTS = {"trend_over_time", "data_lookup"}
 POSITIVE_ACK_PATTERNS = [
@@ -287,15 +287,14 @@ def _extract_codeact(output_obj: Any) -> dict[str, Any]:
             code_blocks += 1
         if "exec" in ptype or "output" in ptype:
             exec_outputs += 1
-        payload = str(part.get("content") or part.get("text") or "")
-        if "analytics" in payload.lower() or "/v1/query" in payload.lower():
+        payload = part.get("content")
+        if payload in (None, ""):
+            payload = part.get("text")
+        decoded, _from_base64, _decode_error = decode_maybe_base64(payload)
+        decoded_text = str(decoded or "")
+        if "analytics.globalnaturewatch.org" in decoded_text.lower():
             uses_analytics_api = True
-        b64 = part.get("base64")
-        if isinstance(b64, str) and b64:
-            try:
-                decoded_chars_total += len(base64.b64decode(b64).decode("utf-8", errors="ignore"))
-            except Exception:
-                pass
+        decoded_chars_total += len(decoded_text)
 
     return {
         "codeact_present": True,
