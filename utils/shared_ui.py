@@ -10,7 +10,7 @@ from typing import Any
 
 import streamlit as st
 
-from utils.config_utils import normalize_langfuse_base_url, resolve_langfuse_config
+from utils.config_utils import normalize_langfuse_base_url, resolve_langfuse_config, resolve_app_password
 from utils.data_helpers import maybe_load_dotenv, iso_utc, csv_bytes_any, init_session_state
 from utils.langfuse_api import (
     clear_langfuse_disk_cache,
@@ -37,13 +37,19 @@ def check_authentication() -> bool:
     """Check if user is authenticated. Returns True if authenticated or no password required."""
     maybe_load_dotenv()
 
-    app_password = os.getenv("APP_PASSWORD", "")
+    try:
+        secrets_map: Mapping[str, Any] = st.secrets
+    except Exception:
+        secrets_map = {}
+    auth_resolved = resolve_app_password(st.session_state, secrets_map, os.environ)
+    app_password = auth_resolved["password"]
     if "app_authenticated" not in st.session_state:
         st.session_state.app_authenticated = False
 
     if app_password and not st.session_state.app_authenticated:
         st.title("🔒 Tracey")
         st.caption("Enter the app password to continue.")
+        st.caption(f"Auth password source: {auth_resolved['source']}")
 
         pw = st.text_input("Password", type="password", key="_app_password_input")
         col_login, _ = st.columns([1, 3])
@@ -81,7 +87,12 @@ def get_app_config() -> dict[str, Any]:
 def render_sidebar() -> dict[str, Any]:
     """Render the shared sidebar and return configuration dict."""
     maybe_load_dotenv()
-    app_password = os.getenv("APP_PASSWORD", "")
+    try:
+        secrets_map: Mapping[str, Any] = st.secrets
+    except Exception:
+        secrets_map = {}
+    auth_resolved = resolve_app_password(st.session_state, secrets_map, os.environ)
+    app_password = auth_resolved["password"]
 
     default_end = date.today()
     default_start = default_end - timedelta(days=7)
