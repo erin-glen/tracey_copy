@@ -9,15 +9,9 @@ import pandas as pd
 import requests
 import streamlit as st
 
-from utils import (
-    build_thread_summary,
-    compute_derived_interactions,
-    create_annotation_queue_item,
-    get_langfuse_headers,
-    list_annotation_queues,
-    normalize_trace_format,
-)
-from utils.content_kpis import compute_thread_key
+from utils.content_kpis import build_thread_summary, compute_derived_interactions, compute_thread_key
+from utils.langfuse_api import create_annotation_queue_item, get_langfuse_headers, list_annotation_queues
+from utils.trace_parsing import normalize_trace_format
 from utils.data_helpers import csv_bytes_any, init_session_state
 
 

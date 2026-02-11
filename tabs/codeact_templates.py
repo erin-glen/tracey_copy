@@ -7,15 +7,10 @@ import hashlib
 import pandas as pd
 import streamlit as st
 
-from utils import (
-    add_codeact_qaqc_columns,
-    build_codeact_template_rollups,
-    compute_derived_interactions,
-    iter_decoded_codeact_parts,
-    normalize_trace_format,
-    redact_secrets,
-    codeact_truncate_text,
-)
+from utils.codeact_qaqc import add_codeact_qaqc_columns, build_codeact_template_rollups
+from utils.codeact_utils import iter_decoded_codeact_parts, redact_secrets, truncate_text as codeact_truncate_text
+from utils.content_kpis import compute_derived_interactions
+from utils.trace_parsing import normalize_trace_format
 
 
 def _trace_fingerprint(traces: list[dict]) -> str:

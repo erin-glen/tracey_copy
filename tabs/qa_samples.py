@@ -9,17 +9,11 @@ import pandas as pd
 import requests
 import streamlit as st
 
-from utils import (
-    normalize_trace_format,
-    compute_derived_interactions,
-    SAMPLE_PACKS,
-    build_sample_pack_df,
-    add_codeact_snippets_for_pack,
-    get_langfuse_headers,
-    create_annotation_queue_item,
-    list_annotation_queues,
-    build_preset_mask,
-)
+from utils.content_kpis import compute_derived_interactions
+from utils.eval_sampling import build_preset_mask
+from utils.langfuse_api import create_annotation_queue_item, get_langfuse_headers, list_annotation_queues
+from utils.sample_packs import SAMPLE_PACKS, add_codeact_snippets_for_pack, build_sample_pack_df
+from utils.trace_parsing import normalize_trace_format
 from utils.data_helpers import init_session_state
 
 

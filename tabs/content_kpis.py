@@ -10,12 +10,8 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
-from utils import (
-    build_content_slices,
-    compute_derived_interactions,
-    normalize_trace_format,
-    summarize_content,
-)
+from utils.content_kpis import build_content_slices, compute_derived_interactions, summarize_content
+from utils.trace_parsing import normalize_trace_format
 
 
 def _pct_str(v: Any) -> str:
