@@ -2,8 +2,10 @@
 
 import os
 import hmac
+import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, time, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 import streamlit as st
@@ -49,9 +51,23 @@ def check_authentication() -> bool:
                     st.rerun()
                 else:
                     st.error("Incorrect password")
+
+
         return False
-    
+
     return True
+
+
+def _load_internal_user_ids() -> set[str]:
+    try:
+        path = Path(__file__).resolve().parent / "fixtures" / "internal_users.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        users = payload.get("internal_users") if isinstance(payload, dict) else None
+        if not isinstance(users, list):
+            return set()
+        return {str(u).strip() for u in users if str(u).strip()}
+    except Exception:
+        return set()
 
 
 def get_app_config() -> dict[str, Any]:
@@ -261,6 +277,8 @@ section[data-testid="stSidebar"] div[data-testid="stDownloadButton"] button:hove
             )
             upload_clicked = st.button("Load CSV", disabled=uploaded_file is None, width="stretch")
 
+        internal_user_ids = _load_internal_user_ids()
+
         # --- User data enrichment (shown after traces are loaded) ---
         user_fetch_clicked = False
         user_invalidate_clicked = False
@@ -274,6 +292,13 @@ section[data-testid="stSidebar"] div[data-testid="stDownloadButton"] button:hove
             has_user_data = isinstance(st.session_state.get("analytics_user_first_seen"), pd.DataFrame) and len(st.session_state.analytics_user_first_seen) > 0
             users_loaded_str = f"_({len(st.session_state.analytics_user_first_seen):,} users loaded)_" if has_user_data else ""
             st.markdown(f"**👥 User data** {users_loaded_str}")
+
+            exclude_internal_users = st.checkbox(
+                "Exclude internal users",
+                value=True,
+                key="exclude_internal_users_checkbox",
+                help="If enabled, remove internal/test accounts from the fetched user table.",
+            )
 
             u_c1, u_c2 = st.columns(2)
             with u_c1:
@@ -395,6 +420,8 @@ section[data-testid="stSidebar"] div[data-testid="stDownloadButton"] button:hove
             envs=envs,
             stats_page_limit=int(stats_page_limit),
             stats_page_size=int(stats_page_size),
+            exclude_internal_users=bool(st.session_state.get("exclude_internal_users_checkbox", True)),
+            internal_user_ids=internal_user_ids,
         )
 
     # Handle user cache invalidation
@@ -747,6 +774,8 @@ def _handle_user_fetch(
     envs: list[str] | None,
     stats_page_limit: int,
     stats_page_size: int,
+    exclude_internal_users: bool,
+    internal_user_ids: set[str],
 ) -> None:
     """Handle the fetch users button click."""
     import pandas as pd
@@ -774,6 +803,13 @@ def _handle_user_fetch(
             [{"user_id": k, "first_seen": v} for k, v in (first_seen_map or {}).items()]
         )
         if len(user_first_seen_df):
+            user_first_seen_df["user_id"] = user_first_seen_df["user_id"].astype(str).map(lambda x: x.strip())
+            user_first_seen_df = user_first_seen_df[user_first_seen_df["user_id"].ne("")]
+            user_first_seen_df = user_first_seen_df[
+                ~user_first_seen_df["user_id"].astype(str).str.contains("machine", case=False, na=False)
+            ]
+            if exclude_internal_users and internal_user_ids:
+                user_first_seen_df = user_first_seen_df[~user_first_seen_df["user_id"].isin(internal_user_ids)]
             user_first_seen_df["first_seen"] = pd.to_datetime(
                 user_first_seen_df["first_seen"], errors="coerce", utc=True
             )
