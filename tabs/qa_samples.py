@@ -79,7 +79,10 @@ def render(public_key: str, secret_key: str, base_url: str, base_thread_url: str
         options=list(SAMPLE_PACKS.keys()),
         format_func=lambda key: SAMPLE_PACKS[key]["label"],
     )
-    max_rows = int(st.number_input("Max rows", min_value=1, max_value=5000, value=200, step=1))
+    st.info(SAMPLE_PACKS[pack_id]["description"])
+
+    with st.expander("Advanced settings", expanded=False):
+        max_rows = int(st.number_input("Max rows", min_value=1, max_value=5000, value=200, step=1))
 
     with st.expander("Pack definition", expanded=False):
         st.write(SAMPLE_PACKS[pack_id]["description"])
@@ -112,9 +115,32 @@ def render(public_key: str, secret_key: str, base_url: str, base_thread_url: str
             lambda sid: f"{base_thread_url.rstrip('/')}/{sid}" if sid.strip() else ""
         )
 
+    show_text_cols = st.checkbox("Show prompt/response/snippets in preview", value=False)
+    preview_columns = [
+        "timestamp",
+        "trace_id",
+        "intent_primary",
+        "completion_state",
+        "struct_fail_reason",
+        "dataset_family",
+        "dataset_name",
+        "aoi_name",
+        "time_start",
+        "time_end",
+        "thread_url",
+    ]
+    text_columns = ["prompt", "response", "codeact_snippets"]
+    if show_text_cols:
+        preview_columns.extend(text_columns)
+    available_preview_columns = [col for col in preview_columns if col in preview_df.columns]
+    if available_preview_columns:
+        preview_df = preview_df[available_preview_columns]
+
     column_config = None
     if "thread_url" in preview_df.columns:
-        column_config = {"thread_url": st.column_config.LinkColumn("Thread URL")}
+        column_config = {
+            "thread_url": st.column_config.LinkColumn("Thread URL", display_text="Open")
+        }
     st.dataframe(preview_df, use_container_width=True, column_config=column_config)
 
     csv_bytes = pack_df.to_csv(index=False).encode("utf-8")
