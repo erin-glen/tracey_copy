@@ -58,6 +58,31 @@ Then open the URL Streamlit prints (usually `http://localhost:8501`).
 - The app fetches traces **once** from the sidebar, then reuses the same dataset across tabs.
 - Human eval exports are always available via the **Download CSV** button.
 
+## Metrics documentation
+
+Tracey includes a lightweight documentation layer so pages are self-explanatory:
+
+- **Inline KPI tooltips** (ℹ️) for key metrics on Analytics / Content KPIs / Thread QA / Eval Insights / QA Sample Packs / CodeAct Templates.
+- A dedicated **📚 Metrics Glossary** page (in the Streamlit sidebar) that lists all registered metrics with:
+  - definition
+  - computation / formula
+  - provenance (raw Langfuse field vs deterministic derivation)
+  - caveats
+- A per-page **"How to read this page"** expander explaining the data source + common pitfalls.
+
+### Updating / adding metric definitions
+
+All metric and page docs live in:
+
+- `utils/metrics_registry.py` (single source of truth)
+
+When you add a new KPI to the UI:
+
+1. Add a doc entry to `METRICS` (pick a stable `metric_id`).
+2. Render the KPI with `metric_with_help(..., metric_id="...")` from `utils/docs_ui.py`.
+
+This keeps the glossary + tooltips in sync.
+
 ## Product Development Mining
 
 The **🧠 Product intelligence** tab contains **Product Development Mining**, split into three sub-tabs:

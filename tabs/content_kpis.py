@@ -12,6 +12,7 @@ import streamlit as st
 
 from utils.content_kpis import build_content_slices, compute_derived_interactions, summarize_content
 from utils.trace_parsing import normalize_trace_format
+from utils.docs_ui import render_page_help, metric_with_help
 
 
 def _pct_str(v: Any) -> str:
@@ -43,6 +44,8 @@ def render(
 
     st.title("🧱 Content KPIs (Deterministic)")
     st.caption("Deterministic structural quality KPIs; no LLM.")
+
+    render_page_help("content_kpis", expanded=False)
 
     traces = st.session_state.get("stats_traces") or []
     if not traces:
@@ -81,7 +84,13 @@ def render(
         ("Threads ending in needs-input", "threads_ended_after_needs_user_input_rate"),
     ]
     for col, (label, key) in zip(cols, metric_keys):
-        col.metric(label, _pct_str(kpis.get(key, 0.0)))
+        with col:
+            metric_with_help(
+                label,
+                _pct_str(kpis.get(key, 0.0)),
+                metric_id=key,
+                key=f"content_kpis_{key}",
+            )
 
     gq = summary.get("global_quality", {})
     c1, c2, c3 = st.columns(3)
