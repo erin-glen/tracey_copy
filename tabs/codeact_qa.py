@@ -10,8 +10,9 @@ import streamlit as st
 
 from tabs.components.codeact_viewer import render_codeact_trace_viewer
 from utils.codeact_explorer_features import add_codeact_explorer_columns
-from utils.codeact_qaqc import add_codeact_qaqc_columns, build_codeact_template_rollups
+from utils.codeact_qaqc import add_codeact_qaqc_columns
 from utils.content_kpis import compute_derived_interactions
+from utils.shared_ui import render_glossary_popover
 from utils.trace_parsing import normalize_trace_format
 
 
@@ -27,16 +28,27 @@ FLAG_SHORT_LABELS = {
 PRESETS = [
     "Needs review (recommended)",
     "All CodeAct",
+    "Consistency issues",
     "Hardcoded chart data",
-    "Requery/reload in later block",
-    "Multi-source provenance",
-    "Pie % sum off",
-    "Consistency issues (time/dataset/AOI)",
-    "Errors / empty outputs",
+    "Errors / no data",
 ]
+
+CODEACT_GLOSSARY = {
+    "CodeAct": "A trace format where the assistant emits code blocks and execution outputs to compute results (charts/metrics).",
+    "Preset": "A saved filter for common QA review slices (e.g., needs review, errors).",
+    "Needs review": "A trace that triggered at least one deterministic QA flag, a consistency issue, or an error/no-data outcome.",
+    "Review reason": "A short summary of which QA checks triggered review for this trace.",
+    "Consistency issue": "The code suggests the run changed dataset/AOI/time unexpectedly across blocks, or parameters don’t match outputs.",
+    "Provenance": "Source URL(s) in raw_data used to compute results. Helps verify data origin and mixing.",
+    "Hardcoded chart data": "Chart values appear embedded directly in the code/output instead of derived from analytics/raw data.",
+    "Multi-source provenance": "More than one distinct source URL was used in a single run (can indicate mixing or re-query).",
+    "Pie % sum off": "Pie-chart percentages don’t sum to ~100% (within tolerance), suggesting formatting/math issues.",
+    "Final insight": "The last narrative summary produced from the CodeAct run (what a user would read as the takeaway).",
+}
 
 COMPACT_INBOX_COLUMNS = [
     "timestamp",
+    "completion_state",
     "dataset_family",
     "dataset_name",
     "aoi_name",
@@ -44,21 +56,10 @@ COMPACT_INBOX_COLUMNS = [
     "time_end",
     "codeact_chart_types",
     "codeact_source_url_count",
-    "codeact_code_blocks_count",
+    "flags_count",
     "review_reason",
     "trace_id",
-    "sessionId",
     "thread_url",
-]
-
-ADVANCED_INBOX_COLUMNS = [
-    "codeact_retrieval_mode",
-    "codeact_chart_prep_mode",
-    "codeact_analysis_tags",
-    "codeact_time_check",
-    "codeact_dataset_check",
-    "codeact_aoi_check",
-    "codeact_template_id",
 ]
 
 
@@ -141,7 +142,7 @@ def _add_inbox_columns(df_ca: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
             tokens.extend(flags_token.split("|"))
         if bool(consistency_series.at[idx]):
             tokens.append("consistency_issue")
-        if answer_type_series.at[idx] != "normal" or completion_series.at[idx] == "error":
+        if completion_series.at[idx] == "error":
             tokens.append("error")
         if completion_series.at[idx] == "no_data":
             tokens.append("no_data")
@@ -151,9 +152,8 @@ def _add_inbox_columns(df_ca: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     out["needs_review"] = (
         (out["flags_count"] > 0)
         | consistency_series
+        | completion_series.isin(["error", "no_data"])
         | (answer_type_series != "normal")
-        | (completion_series == "error")
-        | (completion_series == "no_data")
     )
     return out, flags_cols
 
@@ -162,7 +162,7 @@ def _apply_search(df: pd.DataFrame, search: str) -> pd.DataFrame:
     query = (search or "").strip().lower()
     if not query:
         return df
-    columns = [c for c in ["aoi_name", "dataset_name", "prompt"] if c in df.columns]
+    columns = [c for c in ["aoi_name", "dataset_name", "dataset_family", "prompt", "response", "sessionId", "trace_id"] if c in df.columns]
     if not columns:
         return df
     text_blob = pd.Series([""] * len(df), index=df.index, dtype=str)
@@ -176,25 +176,23 @@ def _apply_preset(df_ca: pd.DataFrame, preset: str) -> pd.DataFrame:
         return df_ca[_is_truthy(_series_or_default(df_ca, "needs_review", False))]
     if preset == "All CodeAct":
         return df_ca
-    if preset == "Hardcoded chart data":
-        return df_ca[_is_truthy(_series_or_default(df_ca, "flag_hardcoded_chart_data", False))]
-    if preset == "Requery/reload in later block":
-        return df_ca[_is_truthy(_series_or_default(df_ca, "flag_requery_in_later_block", False))]
-    if preset == "Multi-source provenance":
-        return df_ca[_is_truthy(_series_or_default(df_ca, "flag_multi_source_provenance", False))]
-    if preset == "Pie % sum off":
-        return df_ca[_is_truthy(_series_or_default(df_ca, "flag_pie_percent_sum_off", False))]
-    if preset == "Consistency issues (time/dataset/AOI)":
+    if preset == "Consistency issues":
         consistency_issue = _is_truthy(_series_or_default(df_ca, "codeact_consistency_issue", False))
-        time_issue = _series_or_default(df_ca, "codeact_time_check", "").astype(str).isin(["missing", "mismatch"])
-        dataset_issue = _series_or_default(df_ca, "codeact_dataset_check", "").astype(str) != "ok"
-        aoi_issue = _series_or_default(df_ca, "codeact_aoi_check", "").astype(str) != "ok"
+        mismatch_tokens = {"missing", "mismatch"}
+        time_issue = _series_or_default(df_ca, "codeact_time_check", "").astype(str).isin(mismatch_tokens)
+        dataset_issue = _series_or_default(df_ca, "codeact_dataset_check", "").astype(str).isin(mismatch_tokens)
+        aoi_issue = _series_or_default(df_ca, "codeact_aoi_check", "").astype(str).isin(mismatch_tokens)
         return df_ca[consistency_issue | time_issue | dataset_issue | aoi_issue]
-    if preset == "Errors / empty outputs":
+    if preset == "Hardcoded chart data":
+        if "flag_hardcoded_chart_data" in df_ca.columns:
+            return df_ca[_is_truthy(_series_or_default(df_ca, "flag_hardcoded_chart_data", False))]
+        return df_ca[df_ca.get("flags_csv", pd.Series([""] * len(df_ca), index=df_ca.index)).astype(str).str.contains("hardcoded_chart", na=False)]
+    if preset == "Errors / no data":
         answer_type = _series_or_default(df_ca, "answer_type", "normal").astype(str)
         completion_state = _series_or_default(df_ca, "completion_state", "").astype(str)
         return df_ca[
-            answer_type.isin(["model_error", "missing_output", "empty_or_short"]) | (completion_state == "error")
+            completion_state.isin(["error", "no_data"])
+            | answer_type.isin(["model_error", "missing_output", "empty_or_short"])
         ]
     return df_ca
 
@@ -212,10 +210,8 @@ def _add_thread_url(df: pd.DataFrame, base_thread_url: str) -> pd.DataFrame:
     return out
 
 
-def _render_inbox_table(df: pd.DataFrame, show_advanced: bool) -> None:
+def _render_inbox_table(df: pd.DataFrame) -> None:
     columns = [c for c in COMPACT_INBOX_COLUMNS if c in df.columns]
-    if show_advanced:
-        columns.extend([c for c in ADVANCED_INBOX_COLUMNS if c in df.columns])
     st.dataframe(
         df[columns],
         use_container_width=True,
@@ -223,9 +219,22 @@ def _render_inbox_table(df: pd.DataFrame, show_advanced: bool) -> None:
     )
 
 
+def _trace_option_label(row: pd.Series) -> str:
+    timestamp = str(row.get("timestamp") or "").strip() or "unknown-time"
+    family = str(row.get("dataset_family") or "").strip() or "unknown-family"
+    aoi = str(row.get("aoi_name") or "").strip() or "unknown-aoi"
+    reason = str(row.get("review_reason") or "").strip() or "no_reason"
+    return f"{timestamp} • {family} • {aoi} • {reason}"
+
+
 def render(base_thread_url: str) -> None:
     st.title("🧩 CodeAct QA")
     st.caption("Use presets to triage CodeAct traces, then inspect the decoded timeline, charts, and provenance.")
+    st.info(
+        "CodeAct traces include code blocks + execution outputs used to generate charts and the final narrative insight.\n\n"
+        "Use **Preset** to triage, optionally **Search**, then select a trace to inspect the timeline, charts, and provenance."
+    )
+    render_glossary_popover("📚 Glossary", CODEACT_GLOSSARY)
 
     traces = st.session_state.get("stats_traces", [])
     if not traces:
@@ -266,70 +275,53 @@ def render(base_thread_url: str) -> None:
     df_ca, _ = _add_inbox_columns(df_ca)
     df_ca = _add_thread_url(df_ca, base_thread_url)
 
-    preset = st.selectbox("Preset", PRESETS, index=0)
+    preset = st.selectbox("Preset", PRESETS, index=0, help=CODEACT_GLOSSARY["Preset"])
     filtered = _apply_preset(df_ca, preset)
 
-    if "dataset_family" in filtered.columns:
-        family_options = sorted({str(v) for v in filtered["dataset_family"].fillna("") if str(v).strip()})
-        selected_families = st.multiselect("dataset_family", family_options)
-        if selected_families:
-            filtered = filtered[filtered["dataset_family"].astype(str).isin(selected_families)]
-
-    search = st.text_input("Search (AOI / dataset / prompt)", "")
+    search = st.text_input(
+        "Search (AOI, dataset, prompt text)",
+        value="",
+        help="Substring search across AOI name, dataset fields, and prompt/response text when available.",
+    )
     filtered = _apply_search(filtered, search)
 
-    with st.expander("Advanced filters"):
-        if "codeact_retrieval_mode" in filtered.columns:
-            opts = sorted({str(v) for v in filtered["codeact_retrieval_mode"].fillna("") if str(v).strip()})
-            selected = st.multiselect("retrieval_mode", opts)
-            if selected:
-                filtered = filtered[filtered["codeact_retrieval_mode"].astype(str).isin(selected)]
+    with st.expander("Optional filters", expanded=False):
+        if "dataset_family" in filtered.columns:
+            family_options = sorted({str(v) for v in filtered["dataset_family"].fillna("") if str(v).strip()})
+            selected_families = st.multiselect(
+                "Dataset family",
+                options=family_options,
+                default=[],
+                help="High-level grouping of dataset_name (e.g., tree_cover_loss, alerts).",
+            )
+            if selected_families:
+                filtered = filtered[filtered["dataset_family"].astype(str).isin(selected_families)]
 
-        if "codeact_chart_types" in filtered.columns:
-            chart_type_options: set[str] = set()
-            for val in filtered["codeact_chart_types"].fillna("").astype(str):
-                for token in [x.strip() for x in val.split(",") if x.strip()]:
-                    chart_type_options.add(token)
-            selected_chart_types = st.multiselect("chart_types", sorted(chart_type_options))
-            if selected_chart_types:
-                filtered = filtered[
-                    filtered["codeact_chart_types"].fillna("").astype(str).apply(
-                        lambda s: any(token in [x.strip() for x in s.split(",") if x.strip()] for token in selected_chart_types)
-                    )
-                ]
+    st.caption(f"{len(filtered):,} CodeAct traces match this view")
+    _render_inbox_table(filtered)
 
-        if "codeact_chart_prep_mode" in filtered.columns:
-            opts = sorted({str(v) for v in filtered["codeact_chart_prep_mode"].fillna("") if str(v).strip()})
-            selected = st.multiselect("chart_prep_mode", opts)
-            if selected:
-                filtered = filtered[filtered["codeact_chart_prep_mode"].astype(str).isin(selected)]
+    trace_options_df = filtered[filtered.get("trace_id", pd.Series(dtype=str)).fillna("").astype(str).str.strip() != ""].copy()
 
-        if "codeact_template_id" in filtered.columns:
-            opts = sorted({str(v) for v in filtered["codeact_template_id"].fillna("") if str(v).strip()})
-            selected = st.multiselect("template_id", opts)
-            if selected:
-                filtered = filtered[filtered["codeact_template_id"].astype(str).isin(selected)]
-
-    st.caption(f"Inbox rows: {len(filtered)}")
-    show_advanced_columns = st.checkbox("Show advanced columns", value=False)
-    _render_inbox_table(filtered, show_advanced_columns)
-
-    trace_ids = filtered.get("trace_id", pd.Series(dtype=str)).fillna("").astype(str)
-    trace_options = [tid for tid in trace_ids.tolist() if tid.strip()]
-    selected_trace_id = st.selectbox("Select trace_id", options=[""] + trace_options)
-
-    if selected_trace_id:
+    if trace_options_df.empty:
+        st.info("No trace IDs available for this view.")
+    else:
+        trace_options_df = trace_options_df.reset_index(drop=True)
+        trace_labels = [_trace_option_label(row) for _, row in trace_options_df.iterrows()]
+        selected_idx = st.selectbox(
+            "Select trace",
+            options=list(range(len(trace_options_df))),
+            index=0,
+            format_func=lambda idx: trace_labels[idx],
+        )
+        selected_trace_id = str(trace_options_df.iloc[selected_idx].get("trace_id") or "").strip()
         trace = traces_by_id.get(selected_trace_id, {})
-        row = filtered[filtered.get("trace_id", "").astype(str) == selected_trace_id].head(1)
-        row_dict = row.iloc[0].to_dict() if not row.empty else {}
+        row_dict = trace_options_df.iloc[selected_idx].to_dict()
         render_codeact_trace_viewer(
             trace=trace,
             row=row_dict,
             base_thread_url=base_thread_url,
             redact_by_default=True,
         )
-    else:
-        st.info("Select a trace to open the Trace Viewer.")
 
     csv_data = filtered.drop(columns=[c for c in ["decoded_code_blocks"] if c in filtered.columns]).to_csv(index=False)
     st.download_button(
@@ -338,19 +330,3 @@ def render(base_thread_url: str) -> None:
         file_name="codeact_inbox.csv",
         mime="text/csv",
     )
-
-    with st.expander("Advanced exports"):
-        try:
-            template_summary_df, _template_traces_df = build_codeact_template_rollups(filtered)
-        except Exception:
-            template_summary_df = pd.DataFrame()
-
-        if template_summary_df.empty:
-            st.info("No template rollups available for current filters.")
-        else:
-            st.download_button(
-                "Download template summary CSV",
-                data=template_summary_df.to_csv(index=False),
-                file_name="codeact_template_summary.csv",
-                mime="text/csv",
-            )

@@ -604,3 +604,16 @@ def _fetch_single(
 
     st.session_state.fetch_debug = fetch_debug
     return traces
+
+
+def render_glossary_popover(title: str, terms: dict[str, str], *, expanded: bool = False) -> None:
+    """Render a glossary in a popover when available, with expander fallback."""
+
+    if hasattr(st, "popover"):
+        with st.popover(title):
+            for term, definition in terms.items():
+                st.markdown(f"**{term}** — {definition}")
+    else:
+        with st.expander(title, expanded=expanded):
+            for term, definition in terms.items():
+                st.markdown(f"**{term}** — {definition}")
