@@ -384,7 +384,7 @@ def fetch_scores_by_queue(
     current_page = page
     while True:
         params: dict[str, Any] = {
-            "queueId": str(queue_id),
+            # "queueId": str(queue_id), ## TODO: add this when langfuse v2 API supports queueId filter
             "page": int(current_page),
             "limit": int(limit),
         }
@@ -392,10 +392,13 @@ def fetch_scores_by_queue(
         _log_http(method="GET", url=url, params=params, json_payload=None, response=r)
         r.raise_for_status()
         data = r.json()
-       
+        rows = []
+        if not isinstance(data, dict):
+            raise Exception(f"Langfuse fetch_scores_by_queue returned unexpected payload type: {type(data).__name__}")
         if isinstance(data, dict):
+            # manual filter on annotation queue id
             meta["totalCount"] = data.get("meta", {}).get("totalCount", 0)
-            rows = data.get("data", [])
+            rows = [x for x in data.get("data", []) if x.get('metadata', {}).get("queue_id") == str(queue_id)]
         else:
             rows = data if isinstance(data, list) else []
         

@@ -122,11 +122,10 @@ def render(
     df = _build_scores_dataframe(scores)
 
     # Display scores table in closed expander
-    df_filtered = df[df.queue_id == selected_queue_id]
-    with st.expander(f"📊 Raw Scores Data ({len(df_filtered)} scores)", expanded=False):
+    with st.expander(f"📊 Raw Scores Data ({len(df)} scores)", expanded=False):
         display_cols = ["trace_id", "score_config", "value", "comment", "source", "evaluator", "timestamp"]
-        available_cols = [c for c in display_cols if c in df_filtered.columns]
-        st.dataframe(df_filtered[available_cols] if available_cols else df_filtered, hide_index=True, width="stretch")
+        available_cols = [c for c in display_cols if c in df.columns]
+        st.dataframe(df[available_cols] if available_cols else df, hide_index=True, width="stretch")
 
     st.divider()
     st.subheader("📊 Insights Dashboard")
@@ -142,7 +141,7 @@ def render(
         queue_items = []
 
     # Calculate metrics
-    metrics = _calculate_metrics(df_filtered, queue_items)
+    metrics = _calculate_metrics(df, queue_items)
 
     # Top row
     col1, col2 = st.columns(2)
@@ -151,24 +150,24 @@ def render(
         _render_completion_section(metrics, queue_items)
 
     with col2:
-        _render_score_distribution_chart(df_filtered)
+        _render_score_distribution_chart(df)
 
     st.divider()
 
     # Full-width Outcome Rates section
-    _render_outcome_rates_section(df_filtered, metrics)
+    _render_outcome_rates_section(df, metrics)
 
     st.divider()
 
     # Additional insights
-    _render_temporal_insights(df_filtered)
+    _render_temporal_insights(df)
 
     st.divider()
 
     _render_flagged_for_removal_section(
         base_url=base_url,
         headers=headers,
-        df=df_filtered,
+        df=df,
     )
 
 
@@ -239,36 +238,11 @@ def _render_flagged_for_removal_section(
         st.caption("No items have been flagged for removal.")
         return
 
-    st.metric("Flagged items", int(len(flagged_df)))
-
     display_cols = ["score_id", "trace_id", "evaluator", "value", "comment", "timestamp"]
     available_cols = [c for c in display_cols if c in flagged_df.columns]
     if available_cols:
         with st.expander(f"View flagged items ({len(flagged_df)})", expanded=False):
             st.dataframe(flagged_df[available_cols], hide_index=True, width="stretch")
-
-    st.markdown("#### Remove annotations")
-    st.caption("This sends a DELETE request to the annotation (score) endpoint for the selected item.")
-
-    for i, (_, row) in enumerate(flagged_df.iterrows()):
-        score_id = str(row.get("score_id") or "").strip()
-        trace_id = str(row.get("trace_id") or "").strip()
-        evaluator = str(row.get("evaluator") or "").strip()
-        label = f"Delete annotation for trace {trace_id} ({evaluator or 'unknown'})"
-
-        c1, c2 = st.columns([4, 1], gap="small")
-        with c1:
-            st.caption(label)
-        with c2:
-            btn_key = f"del_flagged_{score_id or trace_id}_{i}"
-            if st.button("Delete", key=btn_key, disabled=not bool(score_id), width="stretch"):
-                try:
-                    delete_score(base_url=base_url, headers=headers, score_id=score_id)
-                    st.success("Deleted annotation.")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Failed to delete annotation: {e}")
-
 
 def _calculate_metrics(df: pd.DataFrame, queue_items: list[dict[str, Any]]) -> dict[str, Any]:
     """Calculate all metrics from scores DataFrame."""

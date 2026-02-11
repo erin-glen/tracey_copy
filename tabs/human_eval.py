@@ -1123,7 +1123,7 @@ def render(
 
         chart_data = row.get("chart_data") or row.get("charts_data") or []
         if isinstance(chart_data, list) and chart_data:
-            with st.expander("📊 Chart Data", expanded=True):
+            with st.expander("📊 Chart Data", expanded=False):
                 selected_idx = 0
                 if len(chart_data) > 1:
                     options = list(range(len(chart_data)))
@@ -1235,14 +1235,14 @@ def render(
 
         st.caption(_get_encouragement(progress))
         
-        nav_c1, nav_c2, nav_c3 = st.columns(3)
+        nav_c1, nav_c2, nav_c3 = st.columns([2,3,2])
         with nav_c1:
             if st.button("⬅️ Prev", disabled=(idx <= 0), width="stretch"):
                 st.session_state.human_eval_index = idx - 1
                 st.rerun()
         with nav_c2:
             if url:
-                st.link_button("🔗 Go to GNW", url, width="stretch")
+                st.link_button("🔗 View in GNW", url, width="stretch")
             else:
                 st.button("⛓️ No link", disabled=True, width="stretch")
         with nav_c3:
@@ -1260,12 +1260,25 @@ def render(
             with st.expander("❓ See this queue's rubric for scoring", expanded=False):
                 st.markdown(rubric)
 
+        def _on_flagged_for_removal_change() -> None:
+            if not bool(st.session_state.get("human_eval_flagged_for_removal", False)):
+                return
+            marker = """FLAGGED FOR REMOVAL\n""" \
+            """< justify why this trace should be removed >"""
+            current = str(st.session_state.get("_eval_notes", "") or "")
+            if marker in current:
+                return
+            if current.strip():
+                st.session_state["_eval_notes"] = f"{marker}\n\n{current}"
+            else:
+                st.session_state["_eval_notes"] = marker
+
         notes = st.text_area(
-            label="",
+            label="📝 Add notes _(optional)_",
             label_visibility="collapsed",
-            height=120,
+            height=200,
             key="_eval_notes",
-            placeholder="(Optional) Add notes to explain your choice of rating..."
+            placeholder="Explain your choice of rating..."
         )
 
         def _save_and_advance_with_langfuse(
@@ -1346,7 +1359,7 @@ def render(
 
             st.session_state.human_eval_clear_notes_next_run = True
             st.session_state.human_eval_current_trace_id = ""
-            st.session_state.human_eval_flagged_for_removal = False
+            st.session_state.human_eval_reset_flagged_for_removal = True
 
             if idx < len(samples) - 1:
                 st.session_state.human_eval_index = idx + 1
@@ -1357,12 +1370,6 @@ def render(
             st.session_state.human_eval_pending_toast = toast_msg
             st.rerun()
         
-        st.checkbox(
-            "Flag trace for removal from Eval queue",
-            key="human_eval_flagged_for_removal",
-            help="Use this when the trace is not relevant to the evaluation question / rubric and should be removed from the eval set.",
-        )
-        st.markdown("")
         st.markdown("**✅ Score this response**", help="NOTE: You can only rate a response once.")
         r1, r2, r3 = st.columns(3)
         with r1:
@@ -1413,6 +1420,17 @@ def render(
                     idx,
                     samples,
                 )
+
+        if bool(st.session_state.get("human_eval_reset_flagged_for_removal", False)):
+            st.session_state.human_eval_reset_flagged_for_removal = False
+            st.session_state.human_eval_flagged_for_removal = False
+
+        st.checkbox(
+            "Flag for removal",
+            key="human_eval_flagged_for_removal",
+            help="Use this when the trace is not relevant to the evaluation question / rubric and should be removed from the eval set.",
+            on_change=_on_flagged_for_removal_change,
+        )
 
         st.download_button(
             label="⬇️ Download Evals (.csv)",
