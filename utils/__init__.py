@@ -103,6 +103,10 @@ from utils.codeact_qaqc import (
     build_codeact_template_rollups,
 )
 
+from utils.codeact_explorer_features import (
+    add_codeact_explorer_columns,
+)
+
 from utils.eval_sampling import (
     SAMPLE_PRESETS,
     build_preset_mask,
@@ -202,6 +206,7 @@ __all__ = [
     "evaluate_param_consistency",
     "add_codeact_qaqc_columns",
     "build_codeact_template_rollups",
+    "add_codeact_explorer_columns",
     # Shared UI
     "check_authentication",
     "render_sidebar",
