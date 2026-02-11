@@ -70,6 +70,25 @@ def _load_internal_user_ids() -> set[str]:
         return set()
 
 
+def _trace_user_id(t: dict[str, Any]) -> str:
+    try:
+        return str(
+            t.get("userId")
+            or (t.get("metadata") or {}).get("user_id")
+            or (t.get("metadata") or {}).get("userId")
+            or ""
+        ).strip()
+    except Exception:
+        return ""
+
+
+def _is_machine_user_id(user_id: str) -> bool:
+    try:
+        return "machine" in str(user_id).lower()
+    except Exception:
+        return False
+
+
 def get_app_config() -> dict[str, Any]:
     """Get current app configuration from session state."""
     return {
@@ -508,6 +527,7 @@ def _handle_fetch(
             fetch_status=fetch_status,
         )
 
+    traces = [t for t in traces if not _is_machine_user_id(_trace_user_id(t))]
     st.session_state.stats_traces = traces
     st.session_state.fetch_warning = _build_fetch_warning(
         fetch_debug=st.session_state.get("fetch_debug"),
@@ -743,12 +763,15 @@ def _handle_csv_upload(uploaded_file: Any) -> None:
         reader = csv_mod.DictReader(io.StringIO(text))
         traces: list[dict[str, Any]] = []
         for row in reader:
+            user_id = str(row.get("user_id") or "").strip()
+            if _is_machine_user_id(user_id):
+                continue
             trace: dict[str, Any] = {
                 "id": row.get("trace_id") or "",
                 "timestamp": row.get("timestamp") or "",
                 "environment": row.get("environment") or "",
                 "sessionId": row.get("session_id") or "",
-                "userId": row.get("user_id") or "",
+                "userId": user_id,
                 "latency": as_float(row.get("latency_seconds")),
                 "totalCost": as_float(row.get("total_cost")),
                 "input": {"messages": [{"type": "human", "content": row.get("prompt") or ""}]},

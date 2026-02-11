@@ -186,7 +186,6 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
     if "user_id" in df.columns:
         _users_series = df["user_id"].dropna().astype(str).map(lambda x: x.strip())
         _users_series = _users_series.loc[lambda s: s.ne("")]
-        _users_series = _users_series.loc[~_users_series.str.contains("machine", case=False, na=False)]
         unique_users = int(_users_series.nunique())
     else:
         unique_users = 0
@@ -212,18 +211,12 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
         if "user_id" in df.columns and df["user_id"].notna().any():
             active_users_series = df["user_id"].dropna().astype(str).map(lambda x: x.strip())
             active_users_series = active_users_series.loc[lambda s: s.ne("")]
-            active_users_series = active_users_series.loc[
-                ~active_users_series.str.contains("machine", case=False, na=False)
-            ]
             active_users_set = set(active_users_series.unique())
 
             base_first_seen = user_first_seen_df.copy()
             base_first_seen = base_first_seen.dropna(subset=["user_id", "first_seen"])
             base_first_seen["user_id"] = base_first_seen["user_id"].astype(str).map(lambda x: x.strip())
             base_first_seen = base_first_seen[base_first_seen["user_id"].ne("")]
-            base_first_seen = base_first_seen[
-                ~base_first_seen["user_id"].astype(str).str.contains("machine", case=False, na=False)
-            ]
             base_first_seen = base_first_seen[base_first_seen["user_id"].isin(active_users_set)]
 
             fs_dt = pd.to_datetime(base_first_seen["first_seen"], errors="coerce", utc=True)
@@ -241,9 +234,6 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
                 base_user_dates = df.dropna(subset=["user_id", "date"]).copy()
                 base_user_dates["user_id"] = base_user_dates["user_id"].astype(str).map(lambda x: x.strip())
                 base_user_dates = base_user_dates[base_user_dates["user_id"].ne("")]
-                base_user_dates = base_user_dates[
-                    ~base_user_dates["user_id"].astype(str).str.contains("machine", case=False, na=False)
-                ]
                 base_user_dates["date"] = pd.to_datetime(base_user_dates["date"], utc=True, errors="coerce").dt.date
                 base_user_dates = base_user_dates.dropna(subset=["date"])
                 window_first_seen = (
@@ -318,7 +308,6 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
                 .astype(str)
                 .map(lambda x: x.strip())
                 .loc[lambda s: s.ne("")]
-                .loc[lambda s: ~s.str.contains("machine", case=False, na=False)]
             )
             _active_users_set_dbg = set(_active_users_dbg.unique())
 
@@ -326,9 +315,6 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
             _first_seen_dbg = _first_seen_dbg.dropna(subset=["user_id", "first_seen"])
             _first_seen_dbg["user_id"] = _first_seen_dbg["user_id"].astype(str).map(lambda x: x.strip())
             _first_seen_dbg = _first_seen_dbg[_first_seen_dbg["user_id"].ne("")]
-            _first_seen_dbg = _first_seen_dbg[
-                ~_first_seen_dbg["user_id"].astype(str).str.contains("machine", case=False, na=False)
-            ]
             _first_seen_dbg = _first_seen_dbg[_first_seen_dbg["user_id"].isin(_active_users_set_dbg)]
 
             _matched = int(_first_seen_dbg["user_id"].nunique())
@@ -361,7 +347,6 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
                 _s["session_id"] = _s["session_id"].astype(str).map(lambda x: x.strip())
                 _s = _s[_s["user_id"].ne("")]
                 _s = _s[_s["session_id"].ne("")]
-                _s = _s[~_s["user_id"].astype(str).str.contains("machine", case=False, na=False)]
 
                 _spc = (
                     _s.groupby(["user_id", "session_id"], dropna=True)
@@ -382,7 +367,6 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
                 _fs = user_first_seen_df.dropna(subset=["user_id", "first_seen"]).copy()
                 _fs["user_id"] = _fs["user_id"].astype(str).map(lambda x: x.strip())
                 _fs = _fs[_fs["user_id"].ne("")]
-                _fs = _fs[~_fs["user_id"].astype(str).str.contains("machine", case=False, na=False)]
                 _fs["first_seen"] = pd.to_datetime(_fs["first_seen"], errors="coerce", utc=True)
                 _fs = _fs.dropna(subset=["first_seen"])
                 _fs["first_seen_date"] = _fs["first_seen"].dt.date
@@ -679,9 +663,6 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
                     )
                     base_user_sessions = base_user_sessions[base_user_sessions["user_id"].ne("")]
                     base_user_sessions = base_user_sessions[base_user_sessions["session_id"].ne("")]
-                    base_user_sessions = base_user_sessions[
-                        ~base_user_sessions["user_id"].astype(str).str.contains("machine", case=False, na=False)
-                    ]
 
                     session_prompt_counts = (
                         base_user_sessions.groupby(["user_id", "session_id"], dropna=True)
@@ -706,9 +687,6 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
             base_user_days = base_daily.dropna(subset=["date", "user_id"]).copy()
             base_user_days["user_id"] = base_user_days["user_id"].astype(str).map(lambda x: x.strip())
             base_user_days = base_user_days[base_user_days["user_id"].ne("")]
-            base_user_days = base_user_days[
-                ~base_user_days["user_id"].astype(str).str.contains("machine", case=False, na=False)
-            ]
             base_user_days = base_user_days.drop_duplicates(subset=["date", "user_id"])
 
             if user_first_seen_df is not None and len(user_first_seen_df):
@@ -716,9 +694,6 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
                 first_seen_for_chart = first_seen_for_chart.dropna(subset=["user_id", "first_seen"])
                 first_seen_for_chart["user_id"] = first_seen_for_chart["user_id"].astype(str).map(lambda x: x.strip())
                 first_seen_for_chart = first_seen_for_chart[first_seen_for_chart["user_id"].ne("")]
-                first_seen_for_chart = first_seen_for_chart[
-                    ~first_seen_for_chart["user_id"].astype(str).str.contains("machine", case=False, na=False)
-                ]
                 base_daily_with_first = base_user_days.merge(
                     first_seen_for_chart[["user_id", "first_seen"]],
                     on="user_id",
