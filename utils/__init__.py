@@ -57,6 +57,13 @@ from utils.shared_ui import (
     get_app_config,
     configure_page,
 )
+from utils.user_segments import (
+    compute_engaged_users,
+    build_first_seen_lookup,
+    classify_user_segments,
+    build_daily_user_segments,
+    UserSegments,
+)
 from utils.charts import (
     daily_volume_chart,
     daily_outcome_chart,
@@ -144,4 +151,10 @@ __all__ = [
     "render_sidebar",
     "get_app_config",
     "configure_page",
+    # User segments
+    "compute_engaged_users",
+    "build_first_seen_lookup",
+    "classify_user_segments",
+    "build_daily_user_segments",
+    "UserSegments",
 ]

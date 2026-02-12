@@ -36,6 +36,11 @@ from utils import (
     tool_calls_vs_latency_chart,
     tool_flow_sankey_data,
     reasoning_tokens_histogram,
+    classify_user_segments,
+    build_first_seen_lookup,
+    build_daily_user_segments,
+    compute_engaged_users,
+    UserSegments,
 )
 
 
@@ -203,66 +208,22 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
     unique_threads = int(df["session_id"].dropna().nunique()) if "session_id" in df.columns else 0
 
     user_first_seen_df: pd.DataFrame | None = None
-    user_first_seen_total_users = 0
-    user_first_seen_new_users = 0
-    user_first_seen_returning_users = 0
-    user_first_seen_unknown_users = 0
-    user_first_seen_filled_from_window = 0
     has_user_first_seen = False
-
-    engaged_returning_users_total = 0
+    segments = UserSegments()
 
     if isinstance(st.session_state.get("analytics_user_first_seen"), pd.DataFrame):
         user_first_seen_df = st.session_state.get("analytics_user_first_seen")
 
     if user_first_seen_df is not None and len(user_first_seen_df):
         has_user_first_seen = True
-        user_first_seen_total_users = int(len(user_first_seen_df))
+        segments = classify_user_segments(df, user_first_seen_df, start_date, end_date)
 
-        if "user_id" in df.columns and df["user_id"].notna().any():
-            active_users_series = df["user_id"].dropna().astype(str).map(lambda x: x.strip())
-            active_users_series = active_users_series.loc[lambda s: s.ne("")]
-            active_users_set = set(active_users_series.unique())
-
-            base_first_seen = user_first_seen_df.copy()
-            base_first_seen = base_first_seen.dropna(subset=["user_id", "first_seen"])
-            base_first_seen["user_id"] = base_first_seen["user_id"].astype(str).map(lambda x: x.strip())
-            base_first_seen = base_first_seen[base_first_seen["user_id"].ne("")]
-            base_first_seen = base_first_seen[base_first_seen["user_id"].isin(active_users_set)]
-
-            fs_dt = pd.to_datetime(base_first_seen["first_seen"], errors="coerce", utc=True)
-            base_first_seen = base_first_seen.assign(first_seen_date=fs_dt.dt.date)
-            base_first_seen = base_first_seen.dropna(subset=["first_seen_date"])
-
-            first_seen_by_user: dict[str, Any] = {
-                str(r["user_id"]): r["first_seen_date"] for r in base_first_seen.to_dict("records")
-            }
-
-            missing_users = active_users_set - set(first_seen_by_user.keys())
-            user_first_seen_unknown_users = int(len(missing_users))
-
-            if missing_users and "date" in df.columns and df["date"].notna().any():
-                base_user_dates = df.dropna(subset=["user_id", "date"]).copy()
-                base_user_dates["user_id"] = base_user_dates["user_id"].astype(str).map(lambda x: x.strip())
-                base_user_dates = base_user_dates[base_user_dates["user_id"].ne("")]
-                base_user_dates["date"] = pd.to_datetime(base_user_dates["date"], utc=True, errors="coerce").dt.date
-                base_user_dates = base_user_dates.dropna(subset=["date"])
-                window_first_seen = (
-                    base_user_dates.groupby("user_id", dropna=True)["date"].min().to_dict()
-                )
-
-                filled = 0
-                for u in missing_users:
-                    d = window_first_seen.get(u)
-                    if d is not None:
-                        first_seen_by_user[u] = d
-                        filled += 1
-                user_first_seen_filled_from_window = int(filled)
-
-            fs_dates_all = pd.Series(list(first_seen_by_user.values()))
-            in_range = (fs_dates_all >= start_date) & (fs_dates_all <= end_date)
-            user_first_seen_new_users = int(in_range.sum())
-            user_first_seen_returning_users = int((fs_dates_all < start_date).sum())
+    user_first_seen_total_users = int(len(user_first_seen_df)) if user_first_seen_df is not None else 0
+    user_first_seen_new_users = len(segments.new_users)
+    user_first_seen_returning_users = len(segments.returning_users)
+    user_first_seen_unknown_users = len(segments.unknown_users)
+    user_first_seen_filled_from_window = segments.filled_from_window
+    engaged_returning_users_total = len(segments.engaged_returning_users)
 
     util_user_days = 0
     util_mean_prompts = 0.0
@@ -350,46 +311,6 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
                 st.write(user_first_seen_coverage_debug)
             st.json(debug_df)
     if has_user_first_seen:
-        engaged_returning_users: set[str] = set()
-        if "user_id" in df.columns and "session_id" in df.columns:
-            try:
-                _s = df.dropna(subset=["user_id", "session_id"]).copy()
-                _s["user_id"] = _s["user_id"].astype(str).map(lambda x: x.strip())
-                _s["session_id"] = _s["session_id"].astype(str).map(lambda x: x.strip())
-                _s = _s[_s["user_id"].ne("")]
-                _s = _s[_s["session_id"].ne("")]
-
-                _spc = (
-                    _s.groupby(["user_id", "session_id"], dropna=True)
-                    .agg(prompts=("trace_id", "count"))
-                    .reset_index()
-                )
-                _spc["prompts"] = pd.to_numeric(_spc["prompts"], errors="coerce").fillna(0)
-                _good_sessions = _spc[_spc["prompts"] >= 2]
-                _engaged_counts = (
-                    _good_sessions.groupby("user_id", dropna=True)
-                    .agg(good_sessions=("session_id", "nunique"))
-                    .reset_index()
-                )
-                _engaged_raw = set(
-                    _engaged_counts.loc[_engaged_counts["good_sessions"] >= 2, "user_id"].astype(str).tolist()
-                )
-
-                _fs = user_first_seen_df.dropna(subset=["user_id", "first_seen"]).copy()
-                _fs["user_id"] = _fs["user_id"].astype(str).map(lambda x: x.strip())
-                _fs = _fs[_fs["user_id"].ne("")]
-                _fs["first_seen"] = pd.to_datetime(_fs["first_seen"], errors="coerce", utc=True)
-                _fs = _fs.dropna(subset=["first_seen"])
-                _fs["first_seen_date"] = _fs["first_seen"].dt.date
-                _returning_set = set(
-                    _fs.loc[_fs["first_seen_date"] < start_date, "user_id"].astype(str).tolist()
-                )
-
-                engaged_returning_users = _engaged_raw.intersection(_returning_set)
-            except Exception:
-                engaged_returning_users = set()
-        engaged_returning_users_total = int(len(engaged_returning_users))
-
         user_lines = (
             f"• Total users (all time): {user_first_seen_total_users:,}\n"
             f"• New users (since {start_date_label}): {user_first_seen_new_users:,}\n"
@@ -440,8 +361,8 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
             [
                 {"Section": "Volume", "Metric": "Total users (all time)", "Value": f"{user_first_seen_total_users:,}", "Description": "Distinct user IDs seen since launch (Sept 17th 2025) in Langfuse"},
                 {"Section": "Volume", "Metric": f"New users (since {start_date_label})", "Value": f"{user_first_seen_new_users:,}", "Description": f"Users whose first-ever trace was after {start_date_label}"},
-                {"Section": "Volume", "Metric": f"Returning users (since {start_date_label})", "Value": f"{user_first_seen_returning_users:,}", "Description": f"Users active within the selected range whose first-ever trace was before {start_date_label}"},
-                {"Section": "Volume", "Metric": f"Engaged users (since {start_date_label})", "Value": f"{engaged_returning_users_total:,}", "Description": "Returning users who had ≥2 sessions in the range, and in each of those sessions sent ≥2 prompts"},
+                {"Section": "Volume", "Metric": f"Returning users (since {start_date_label})", "Value": f"{user_first_seen_returning_users:,}", "Description": f"Users whose first-ever trace was before {start_date_label} (excludes engaged)"},
+                {"Section": "Volume", "Metric": f"Engaged users (since {start_date_label})", "Value": f"{engaged_returning_users_total:,}", "Description": f"Users first seen before {start_date_label} with ≥2 sessions each having ≥2 prompts"},
             ]
         )
 
@@ -664,87 +585,73 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
 
         # Additional insight: User activity over time (new vs returning)
         if "user_id" in base_daily.columns:
-            engaged_users: set[str] = set()
-            if "session_id" in base_daily.columns:
-                try:
-                    base_user_sessions = base_daily.dropna(subset=["user_id", "session_id"]).copy()
-                    base_user_sessions["user_id"] = base_user_sessions["user_id"].astype(str).map(lambda x: x.strip())
-                    base_user_sessions["session_id"] = (
-                        base_user_sessions["session_id"].astype(str).map(lambda x: x.strip())
-                    )
-                    base_user_sessions = base_user_sessions[base_user_sessions["user_id"].ne("")]
-                    base_user_sessions = base_user_sessions[base_user_sessions["session_id"].ne("")]
-
-                    session_prompt_counts = (
-                        base_user_sessions.groupby(["user_id", "session_id"], dropna=True)
-                        .agg(prompts=("trace_id", "count"))
-                        .reset_index()
-                    )
-                    session_prompt_counts["prompts"] = pd.to_numeric(
-                        session_prompt_counts["prompts"], errors="coerce"
-                    ).fillna(0)
-                    good_sessions = session_prompt_counts[session_prompt_counts["prompts"] >= 2]
-                    engaged_counts = (
-                        good_sessions.groupby("user_id", dropna=True)
-                        .agg(good_sessions=("session_id", "nunique"))
-                        .reset_index()
-                    )
-                    engaged_users = set(
-                        engaged_counts.loc[engaged_counts["good_sessions"] >= 2, "user_id"].astype(str).tolist()
-                    )
-                except Exception:
-                    engaged_users = set()
-
-            base_user_days = base_daily.dropna(subset=["date", "user_id"]).copy()
-            base_user_days["user_id"] = base_user_days["user_id"].astype(str).map(lambda x: x.strip())
-            base_user_days = base_user_days[base_user_days["user_id"].ne("")]
-            base_user_days = base_user_days.drop_duplicates(subset=["date", "user_id"])
-
-            if user_first_seen_df is not None and len(user_first_seen_df):
-                first_seen_for_chart = user_first_seen_df.copy()
-                first_seen_for_chart = first_seen_for_chart.dropna(subset=["user_id", "first_seen"])
-                first_seen_for_chart["user_id"] = first_seen_for_chart["user_id"].astype(str).map(lambda x: x.strip())
-                first_seen_for_chart = first_seen_for_chart[first_seen_for_chart["user_id"].ne("")]
-                base_daily_with_first = base_user_days.merge(
-                    first_seen_for_chart[["user_id", "first_seen"]],
-                    on="user_id",
-                    how="left",
-                )
-                base_daily_with_first["first_seen"] = pd.to_datetime(
-                    base_daily_with_first["first_seen"], errors="coerce", utc=True
-                )
-                base_daily_with_first["first_seen_date"] = base_daily_with_first["first_seen"].dt.date
-                base_daily_with_first["is_new"] = (
-                    base_daily_with_first["first_seen_date"] == base_daily_with_first["date"]
-                )
+            if has_user_first_seen:
+                fs_lookup = segments.first_seen_by_user
+                engaged_set = segments.engaged_returning_users
             else:
-                user_first_seen = base_user_days.groupby("user_id")["date"].min().reset_index()
-                user_first_seen.columns = ["user_id", "first_seen_date"]
-                base_daily_with_first = base_user_days.merge(user_first_seen, on="user_id", how="left")
-                base_daily_with_first["is_new"] = (
-                    base_daily_with_first["date"] == base_daily_with_first["first_seen_date"]
+                fs_lookup, _ = build_first_seen_lookup(base_daily, None, start_date, end_date)
+                _returning_for_engaged = {
+                    uid for uid, fsd in fs_lookup.items() if fsd < start_date
+                }
+                engaged_set = compute_engaged_users(
+                    base_daily, restrict_to=_returning_for_engaged,
                 )
 
-            base_daily_with_first["is_engaged"] = base_daily_with_first["user_id"].isin(engaged_users)
+            daily_segments = build_daily_user_segments(base_daily, fs_lookup, engaged_set)
 
-            new_returning = (
-                base_daily_with_first.groupby("date")
-                .agg(
-                    new_users=("is_new", "sum"),
-                    returning_users=("is_new", lambda x: int((~x).sum())),
-                )
-                .reset_index()
-            )
+            if len(daily_segments) > 1:
+                st.markdown("#### New vs Returning users")
+                with st.expander("ℹ️ How are these categories defined?", expanded=False):
+                    st.markdown(
+                        f"""
+**Definitions (mutually exclusive — they always sum to the total):**
 
-            if len(new_returning) > 1:
-                st.markdown(
-                    "#### New vs Returning users",
-                    help="New users have their first-ever trace date on that day. Returning users were first seen before that day.",
+| Category | Rule |
+|----------|------|
+| **New** | User whose very first trace ever was **on or after {start_date}** |
+| **Returning** | User whose first trace was **before {start_date}** and who is **not** engaged |
+| **Engaged** | User whose first trace was **before {start_date}** with ≥ 2 sessions, each containing ≥ 2 prompts |
+
+**Daily chart — what each bar measures:**
+
+Each day, every active user is classified independently:
+
+- **New on day D** → the user's `first_seen_date` equals D (their very first trace was that day).
+- **Returning on day D** → `first_seen_date` < D and the user is *not* engaged.
+- **Engaged on day D** → `first_seen_date` < D and the user *is* engaged.
+
+A user who is "New" on day 1 becomes "Returning" on every subsequent day they are active.
+
+**Example — 3 users over 3 days (start date = {start_date}):**
+
+| User | First seen | Engaged? | June 3 | June 4 | June 5 |
+|------|-----------|----------|--------|--------|--------|
+| Alice | June 3 *(new)* | No | **New** | Returning | Returning |
+| Bob | May 10 *(before start)* | No | Returning | Returning | — |
+| Carol | Apr 1 *(before start)* | Yes | Engaged | Engaged | Engaged |
+
+**Pie chart vs daily chart:**
+
+The **pie / summary table** counts each user **once** across the entire range (unique users).
+The **daily chart** counts each user **once per active day**, so a returning user active on 5 days adds 5 to the daily sum but only 1 to the pie.
+
+Daily New sum ≤ Pie New — they are equal when every new user has a trace on their exact first-seen date.
+"""
+                    )
+                has_engaged = int(daily_segments["engaged_users"].sum()) > 0
+                value_vars = ["new_users", "returning_users"]
+                if has_engaged:
+                    value_vars.append("engaged_users")
+
+                daily_segments["day_total_users"] = (
+                    daily_segments["new_users"]
+                    + daily_segments["returning_users"]
+                    + daily_segments["engaged_users"]
                 )
-                new_returning["day_total_users"] = new_returning["new_users"] + new_returning["returning_users"]
-                nr_long = new_returning.melt(
+
+                nr_long = daily_segments.melt(
                     id_vars=["date", "day_total_users"],
-                    value_vars=["new_users", "returning_users"],
+                    value_vars=value_vars,
                     var_name="user_type",
                     value_name="count",
                 )
@@ -752,55 +659,16 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
                 nr_long["user_type"] = nr_long["user_type"].replace({
                     "new_users": "New",
                     "returning_users": "Returning",
+                    "engaged_users": "Engaged",
                 })
-
-                if len(engaged_users):
-                    engaged_daily = (
-                        base_daily_with_first[base_daily_with_first["is_engaged"]]
-                        .groupby("date")
-                        .agg(engaged_users=("user_id", "nunique"))
-                        .reset_index()
-                    )
-                    new_returning = new_returning.merge(engaged_daily, on="date", how="left")
-                    new_returning["engaged_users"] = (
-                        pd.to_numeric(new_returning["engaged_users"], errors="coerce").fillna(0).astype(int)
-                    )
-                    new_returning["new_users"] = (
-                        pd.to_numeric(new_returning["new_users"], errors="coerce").fillna(0).astype(int)
-                    )
-                    new_returning["returning_users"] = (
-                        pd.to_numeric(new_returning["returning_users"], errors="coerce").fillna(0).astype(int)
-                    )
-                    # Make segments mutually exclusive by taking Engaged users out of New/Returning.
-                    new_returning["new_users"] = (new_returning["new_users"] - new_returning["engaged_users"]).clip(
-                        lower=0
-                    )
-                    new_returning["returning_users"] = (
-                        new_returning["returning_users"] - new_returning["engaged_users"]
-                    ).clip(lower=0)
-
-                    new_returning["day_total_users"] = (
-                        new_returning["new_users"] + new_returning["returning_users"] + new_returning["engaged_users"]
-                    )
-                    nr_long = new_returning.melt(
-                        id_vars=["date", "day_total_users"],
-                        value_vars=["new_users", "returning_users", "engaged_users"],
-                        var_name="user_type",
-                        value_name="count",
-                    )
-                    nr_long["pct_of_day"] = nr_long["count"] / nr_long["day_total_users"].clip(lower=1)
-                    nr_long["user_type"] = nr_long["user_type"].replace({
-                        "new_users": "New",
-                        "returning_users": "Returning",
-                        "engaged_users": "Engaged",
-                    })
 
                 domain = ["New", "Returning"]
                 colors = ["#98a2b3", "#2e90fa"]
-                if len(engaged_users):
+                if has_engaged:
                     domain = ["New", "Returning", "Engaged"]
                     colors = ["#98a2b3", "#2e90fa", "#12b76a"]
                 color_scale = alt.Scale(domain=domain, range=colors)
+
                 nr_chart = (
                     alt.Chart(nr_long)
                     .mark_bar(size=17)
@@ -818,19 +686,24 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
                     .properties(height=220)
                 )
 
-                total_new = int(pd.to_numeric(new_returning["new_users"], errors="coerce").fillna(0).sum())
-                total_returning = int(
-                    pd.to_numeric(new_returning["returning_users"], errors="coerce").fillna(0).sum()
+                # Pie chart uses unique user counts so it matches the summary table.
+                # New + Returning + Engaged = Total (all mutually exclusive).
+                pie_new = len(segments.new_users) if has_user_first_seen else int(
+                    daily_segments["new_users"].sum()
                 )
+                pie_returning = len(segments.returning_users) if has_user_first_seen else int(
+                    daily_segments["returning_users"].sum()
+                )
+                pie_engaged = len(segments.engaged_returning_users) if has_user_first_seen else int(
+                    daily_segments["engaged_users"].sum()
+                )
+
                 pie_rows: list[dict[str, Any]] = [
-                    {"user_type": "New", "count": total_new},
-                    {"user_type": "Returning", "count": total_returning},
+                    {"user_type": "New", "count": pie_new},
+                    {"user_type": "Returning", "count": pie_returning},
                 ]
-                if "engaged_users" in new_returning.columns:
-                    total_engaged = int(
-                        pd.to_numeric(new_returning["engaged_users"], errors="coerce").fillna(0).sum()
-                    )
-                    pie_rows.append({"user_type": "Engaged", "count": total_engaged})
+                if has_engaged:
+                    pie_rows.append({"user_type": "Engaged", "count": pie_engaged})
 
                 pie_df = pd.DataFrame(pie_rows)
                 pie_df = pie_df[pie_df["count"] > 0]
@@ -861,7 +734,11 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
                 with nr_c2:
                     st.markdown(
                         "##### Total new vs returning (range)",
-                        help="Totals across the selected date range (sum of daily unique user counts).",
+                        help=(
+                            "Unique users in the selected date range. "
+                            "Returning = first seen before start date (excl. engaged). "
+                            "Daily chart values won't sum to these totals because a user active on multiple days is counted each day."
+                        ),
                     )
                     st.altair_chart(nr_pie, width="stretch")
 
