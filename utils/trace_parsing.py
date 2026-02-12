@@ -7,9 +7,32 @@ from typing import Any
 from urllib.parse import urlparse
 
 
+def _is_nan(value: Any) -> bool:
+    """Return True for float NaN values (including pandas/numpy NaN).
+
+    Langfuse CSV exports often contain NaN for missing JSON fields (input/output/metadata).
+    NaN is truthy in Python, so naive `(value or {})` patterns break.
+    """
+    try:
+        import pandas as pd  # local import to keep module import order stable
+
+        return bool(pd.isna(value))
+    except Exception:
+        return isinstance(value, float) and value != value
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    """Return value if it's a dict, else an empty dict (NaN-safe)."""
+    if value is None or _is_nan(value):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
 def normalize_trace_format(row: dict[str, Any]) -> dict[str, Any]:
     """Normalize a trace row by parsing JSON fields."""
     def parse_json_field(value: Any) -> Any:
+        if value is None or _is_nan(value):
+            return None
         if isinstance(value, str):
             try:
                 parsed = json.loads(value)
@@ -102,7 +125,8 @@ def _is_tool_msg(msg: Any) -> bool:
 
 def first_human_prompt(row: dict[str, Any]) -> str:
     """Extract the first human message from a trace's input."""
-    msgs = (((row.get("input") or {}).get("messages")) or [])
+    input_obj = _as_dict(row.get("input"))
+    msgs = (input_obj.get("messages") or [])
     for m in msgs:
         if _is_user_msg(m):
             t = _msg_text(m.get("content"))
@@ -113,7 +137,8 @@ def first_human_prompt(row: dict[str, Any]) -> str:
 
 def final_ai_message(row: dict[str, Any]) -> str:
     """Extract the final AI message from a trace's output."""
-    msgs = (((row.get("output") or {}).get("messages")) or [])
+    output_obj = _as_dict(row.get("output"))
+    msgs = (output_obj.get("messages") or [])
     for m in reversed(msgs):
         if _is_ai_msg(m):
             t = _msg_text(m.get("content"))
@@ -124,7 +149,8 @@ def final_ai_message(row: dict[str, Any]) -> str:
 
 def current_human_prompt(row: dict[str, Any]) -> str:
     """Extract the current (last) human/user message from a trace input."""
-    msgs = (((row.get("input") or {}).get("messages")) or [])
+    input_obj = _as_dict(row.get("input"))
+    msgs = (input_obj.get("messages") or [])
     for m in reversed(msgs):
         if _is_user_msg(m):
             t = _msg_text(m.get("content"))
@@ -139,7 +165,8 @@ def slice_output_to_current_turn(
     """Slice output.messages to the current turn based on current input prompt."""
     msgs = output_msgs
     if msgs is None:
-        msgs = ((trace.get("output") or {}).get("messages") or [])
+        output_obj = _as_dict(trace.get("output"))
+        msgs = (output_obj.get("messages") or [])
     if not isinstance(msgs, list):
         return msgs
 

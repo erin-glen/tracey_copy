@@ -1,8 +1,39 @@
 import unittest
+import importlib.util
+import sys
+import types
+from pathlib import Path
 
 import pandas as pd
 
-from utils.eval_sampling import build_preset_mask, sample_trace_ids
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _load_utils_module(module_name: str):
+    """Load utils.<module_name> without executing utils/__init__.py (Streamlit dependency)."""
+    if "utils" not in sys.modules:
+        utils_pkg = types.ModuleType("utils")
+        utils_pkg.__path__ = [str(REPO_ROOT / "utils")]
+        sys.modules["utils"] = utils_pkg
+
+    full_name = f"utils.{module_name}"
+    if full_name in sys.modules:
+        return sys.modules[full_name]
+
+    path = REPO_ROOT / "utils" / f"{module_name}.py"
+    spec = importlib.util.spec_from_file_location(full_name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Unable to load {full_name} from {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[full_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+eval_sampling = _load_utils_module("eval_sampling")
+build_preset_mask = eval_sampling.build_preset_mask
+sample_trace_ids = eval_sampling.sample_trace_ids
 
 
 class TestEvalSampling(unittest.TestCase):

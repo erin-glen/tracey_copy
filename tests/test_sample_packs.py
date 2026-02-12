@@ -1,9 +1,39 @@
 import base64
 import unittest
+import importlib.util
+import sys
+import types
+from pathlib import Path
 
 import pandas as pd
 
-from utils.sample_packs import add_codeact_snippets_for_pack, build_sample_pack_df
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _load_utils_module(module_name: str):
+    """Load a module from utils/... without importing utils/__init__.py."""
+    if "utils" not in sys.modules:
+        pkg = types.ModuleType("utils")
+        pkg.__path__ = [str(REPO_ROOT / "utils")]
+        sys.modules["utils"] = pkg
+
+    full_name = f"utils.{module_name}"
+    if full_name in sys.modules:
+        return sys.modules[full_name]
+
+    path = REPO_ROOT / "utils" / f"{module_name}.py"
+    spec = importlib.util.spec_from_file_location(full_name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Unable to load {full_name} from {path}")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[full_name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_sample_packs = _load_utils_module("sample_packs")
+add_codeact_snippets_for_pack = _sample_packs.add_codeact_snippets_for_pack
+build_sample_pack_df = _sample_packs.build_sample_pack_df
 
 
 class TestSamplePacks(unittest.TestCase):
