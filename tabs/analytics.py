@@ -117,7 +117,7 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
     if exclude_internal and n_excluded > 0:
         st.info(
             f"**{n_raw:,}** raw traces loaded · **{n_excluded:,}** internal-user traces excluded · "
-            f"**{n_filtered:,}** traces used for analytics"
+            f"**{n_filtered:,}** traces used for analytics (_{n_filtered/n_raw:,.1%} of raw traces_)"
         )
 
     normed = [normalize_trace_format(t) for t in traces]
@@ -223,7 +223,8 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
     user_first_seen_returning_users = len(segments.returning_users)
     user_first_seen_unknown_users = len(segments.unknown_users)
     user_first_seen_filled_from_window = segments.filled_from_window
-    engaged_returning_users_total = len(segments.engaged_returning_users)
+    engaged_users_total = len(segments.engaged_users)
+    not_engaged_users_total = len(segments.not_engaged_users)
 
     util_user_days = 0
     util_mean_prompts = 0.0
@@ -313,9 +314,12 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
     if has_user_first_seen:
         user_lines = (
             f"• Total users (all time): {user_first_seen_total_users:,}\n"
+            "**Acquisition**\n"
             f"• New users (since {start_date_label}): {user_first_seen_new_users:,}\n"
             f"• Returning users (since {start_date_label}): {user_first_seen_returning_users:,}\n"
-            f"• Engaged users (since {start_date_label}): {engaged_returning_users_total:,}\n"
+            "**Engagement**\n"
+            f"• Engaged users (since {start_date_label}): {engaged_users_total:,}\n"
+            f"• Not engaged users (since {start_date_label}): {not_engaged_users_total:,}\n"
         )
     else:
         user_lines = ""
@@ -354,15 +358,16 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
     summary_rows = [
         {"Section": "Volume", "Metric": "Total traces", "Value": f"{total_traces:,}", "Description": "Total number of prompts in the period"},
         {"Section": "Volume", "Metric": "Unique threads", "Value": f"{unique_threads:,}", "Description": "Distinct conversation sessions (multi-turn chats)"},
-        {"Section": "Volume", "Metric": "Unique users", "Value": f"{unique_users:,}", "Description": "Distinct user IDs that made at least one request"},
+        {"Section": "Volume", "Metric": "Unique users", "Value": f"{unique_users:,}", "Description": "Distinct user IDs that made at least one prompt"},
     ]
     if has_user_first_seen:
         summary_rows.extend(
             [
                 {"Section": "Volume", "Metric": "Total users (all time)", "Value": f"{user_first_seen_total_users:,}", "Description": "Distinct user IDs seen since launch (Sept 17th 2025) in Langfuse"},
-                {"Section": "Volume", "Metric": f"New users (since {start_date_label})", "Value": f"{user_first_seen_new_users:,}", "Description": f"Users whose first-ever trace was after {start_date_label}"},
-                {"Section": "Volume", "Metric": f"Returning users (since {start_date_label})", "Value": f"{user_first_seen_returning_users:,}", "Description": f"Users whose first-ever trace was before {start_date_label} (excludes engaged)"},
-                {"Section": "Volume", "Metric": f"Engaged users (since {start_date_label})", "Value": f"{engaged_returning_users_total:,}", "Description": f"Users first seen before {start_date_label} with ≥2 sessions each having ≥2 prompts"},
+                {"Section": "Acquisition", "Metric": f"New users (since {start_date_label})", "Value": f"{user_first_seen_new_users:,}", "Description": f"Users whose first-ever trace was on or after {start_date_label}"},
+                {"Section": "Acquisition", "Metric": f"Returning users (since {start_date_label})", "Value": f"{user_first_seen_returning_users:,}", "Description": f"Users whose first-ever trace was before {start_date_label}"},
+                {"Section": "Engagement", "Metric": f"Engaged users (since {start_date_label})", "Value": f"{engaged_users_total:,}", "Description": "Users with ≥2 sessions each having ≥2 prompts (new or returning)"},
+                {"Section": "Engagement", "Metric": f"Not engaged users (since {start_date_label})", "Value": f"{not_engaged_users_total:,}", "Description": "Users not meeting the engagement threshold"},
             ]
         )
 
@@ -583,164 +588,173 @@ div[data-testid="stMetric"] [data-testid="stMetricDelta"] { font-size: 0.75rem; 
             st.markdown("#### Daily latency", help="Mean and p95 latency per day.")
             st.altair_chart(lat_chart, width="stretch")
 
-        # Additional insight: User activity over time (new vs returning)
+        # Additional insight: User activity over time
         if "user_id" in base_daily.columns:
             if has_user_first_seen:
                 fs_lookup = segments.first_seen_by_user
-                engaged_set = segments.engaged_returning_users
+                engaged_set = segments.engaged_users
             else:
                 fs_lookup, _ = build_first_seen_lookup(base_daily, None, start_date, end_date)
-                _returning_for_engaged = {
-                    uid for uid, fsd in fs_lookup.items() if fsd < start_date
-                }
-                engaged_set = compute_engaged_users(
-                    base_daily, restrict_to=_returning_for_engaged,
-                )
+                engaged_set = compute_engaged_users(base_daily)
 
             daily_segments = build_daily_user_segments(base_daily, fs_lookup, engaged_set)
 
             if len(daily_segments) > 1:
-                st.markdown("#### New vs Returning users")
+
+                # ── Shared helper: build a stacked-bar + pie pair ──
+                def _user_segment_charts(
+                    daily_df: pd.DataFrame,
+                    col_a: str,
+                    col_b: str,
+                    label_a: str,
+                    label_b: str,
+                    color_a: str,
+                    color_b: str,
+                    pie_a: int,
+                    pie_b: int,
+                ) -> tuple:
+                    day_total = daily_df[col_a] + daily_df[col_b]
+                    long = daily_df.assign(day_total=day_total).melt(
+                        id_vars=["date", "day_total"],
+                        value_vars=[col_a, col_b],
+                        var_name="user_type",
+                        value_name="count",
+                    )
+                    long["pct_of_day"] = long["count"] / long["day_total"].clip(lower=1)
+                    long["user_type"] = long["user_type"].replace({col_a: label_a, col_b: label_b})
+
+                    domain = [label_a, label_b]
+                    colors = [color_a, color_b]
+                    scale = alt.Scale(domain=domain, range=colors)
+
+                    bar = (
+                        alt.Chart(long)
+                        .mark_bar(size=17)
+                        .encode(
+                            x=alt.X("date:T", title="Date"),
+                            y=alt.Y("count:Q", title="Users", stack=True),
+                            color=alt.Color("user_type:N", title="User type", sort=domain, scale=scale),
+                            tooltip=[
+                                alt.Tooltip("date:T", title="Date"),
+                                alt.Tooltip("user_type:N", title="Type"),
+                                alt.Tooltip("count:Q", title="Users", format=","),
+                                alt.Tooltip("pct_of_day:Q", title="% of day", format=".1%"),
+                            ],
+                        )
+                        .properties(height=220)
+                    )
+
+                    pie_df = pd.DataFrame([
+                        {"user_type": label_a, "count": pie_a},
+                        {"user_type": label_b, "count": pie_b},
+                    ])
+                    pie_df = pie_df[pie_df["count"] > 0]
+                    pie_df["percent"] = pie_df["count"] / max(1, int(pie_df["count"].sum())) * 100
+
+                    pie = (
+                        alt.Chart(pie_df)
+                        .mark_arc(innerRadius=55)
+                        .encode(
+                            theta=alt.Theta("count:Q", title="Users"),
+                            color=alt.Color("user_type:N", title="", sort=domain, scale=scale),
+                            tooltip=[
+                                alt.Tooltip("user_type:N", title="Type"),
+                                alt.Tooltip("count:Q", title="Users", format=","),
+                                alt.Tooltip("percent:Q", title="%", format=".1f"),
+                            ],
+                        )
+                        .properties(height=220)
+                    )
+                    return bar, pie
+
+                # ── Shared expander explaining both insights ──
+                st.markdown("#### User segmentation")
                 with st.expander("ℹ️ How are these categories defined?", expanded=False):
                     st.markdown(
                         f"""
-**Definitions (mutually exclusive — they always sum to the total):**
+Users are classified along **two independent dimensions**. Each is a simple binary split.
+
+**Dimension 1 — Acquisition (New vs Returning):**
 
 | Category | Rule |
 |----------|------|
 | **New** | User whose very first trace ever was **on or after {start_date}** |
-| **Returning** | User whose first trace was **before {start_date}** and who is **not** engaged |
-| **Engaged** | User whose first trace was **before {start_date}** with ≥ 2 sessions, each containing ≥ 2 prompts |
+| **Returning** | User whose first trace was **before {start_date}** |
 
-**Daily chart — what each bar measures:**
+On the **daily chart**, a user is "New" only on the day matching their `first_seen_date`.
+On every subsequent active day they become "Returning".
 
-Each day, every active user is classified independently:
+**Dimension 2 — Engagement (Engaged vs Not Engaged):**
 
-- **New on day D** → the user's `first_seen_date` equals D (their very first trace was that day).
-- **Returning on day D** → `first_seen_date` < D and the user is *not* engaged.
-- **Engaged on day D** → `first_seen_date` < D and the user *is* engaged.
+| Category | Rule |
+|----------|------|
+| **Engaged** | User with **≥ 2 sessions**, each containing **≥ 2 prompts** |
+| **Not Engaged** | Everyone else |
 
-A user who is "New" on day 1 becomes "Returning" on every subsequent day they are active.
-
-**Example — 3 users over 3 days (start date = {start_date}):**
-
-| User | First seen | Engaged? | June 3 | June 4 | June 5 |
-|------|-----------|----------|--------|--------|--------|
-| Alice | June 3 *(new)* | No | **New** | Returning | Returning |
-| Bob | May 10 *(before start)* | No | Returning | Returning | — |
-| Carol | Apr 1 *(before start)* | Yes | Engaged | Engaged | Engaged |
+Engagement applies to **all** users — a New user can be Engaged if they hit the threshold within the date range.
 
 **Pie chart vs daily chart:**
 
-The **pie / summary table** counts each user **once** across the entire range (unique users).
-The **daily chart** counts each user **once per active day**, so a returning user active on 5 days adds 5 to the daily sum but only 1 to the pie.
-
-Daily New sum ≤ Pie New — they are equal when every new user has a trace on their exact first-seen date.
+The **pie / summary table** counts each user **once** across the entire range.
+The **daily chart** counts each user **once per active day**, so a user active on 5 days adds 5 to the daily total but only 1 to the pie.
 """
                     )
-                has_engaged = int(daily_segments["engaged_users"].sum()) > 0
-                value_vars = ["new_users", "returning_users"]
-                if has_engaged:
-                    value_vars.append("engaged_users")
 
-                daily_segments["day_total_users"] = (
-                    daily_segments["new_users"]
-                    + daily_segments["returning_users"]
-                    + daily_segments["engaged_users"]
-                )
-
-                nr_long = daily_segments.melt(
-                    id_vars=["date", "day_total_users"],
-                    value_vars=value_vars,
-                    var_name="user_type",
-                    value_name="count",
-                )
-                nr_long["pct_of_day"] = nr_long["count"] / nr_long["day_total_users"].clip(lower=1)
-                nr_long["user_type"] = nr_long["user_type"].replace({
-                    "new_users": "New",
-                    "returning_users": "Returning",
-                    "engaged_users": "Engaged",
-                })
-
-                domain = ["New", "Returning"]
-                colors = ["#98a2b3", "#2e90fa"]
-                if has_engaged:
-                    domain = ["New", "Returning", "Engaged"]
-                    colors = ["#98a2b3", "#2e90fa", "#12b76a"]
-                color_scale = alt.Scale(domain=domain, range=colors)
-
-                nr_chart = (
-                    alt.Chart(nr_long)
-                    .mark_bar(size=17)
-                    .encode(
-                        x=alt.X("date:T", title="Date"),
-                        y=alt.Y("count:Q", title="Users", stack=True),
-                        color=alt.Color("user_type:N", title="User type", sort=domain, scale=color_scale),
-                        tooltip=[
-                            alt.Tooltip("date:T", title="Date"),
-                            alt.Tooltip("user_type:N", title="Type"),
-                            alt.Tooltip("count:Q", title="Users", format=","),
-                            alt.Tooltip("pct_of_day:Q", title="% of users that day", format=".1%"),
-                        ],
-                    )
-                    .properties(height=220)
-                )
-
-                # Pie chart uses unique user counts so it matches the summary table.
-                # New + Returning + Engaged = Total (all mutually exclusive).
+                # ── Insight 1: New vs Returning ──
                 pie_new = len(segments.new_users) if has_user_first_seen else int(
                     daily_segments["new_users"].sum()
                 )
                 pie_returning = len(segments.returning_users) if has_user_first_seen else int(
                     daily_segments["returning_users"].sum()
                 )
-                pie_engaged = len(segments.engaged_returning_users) if has_user_first_seen else int(
-                    daily_segments["engaged_users"].sum()
+                nr_bar, nr_pie = _user_segment_charts(
+                    daily_segments,
+                    "new_users", "returning_users",
+                    "New", "Returning",
+                    "#98a2b3", "#2e90fa",
+                    pie_new, pie_returning,
                 )
-
-                pie_rows: list[dict[str, Any]] = [
-                    {"user_type": "New", "count": pie_new},
-                    {"user_type": "Returning", "count": pie_returning},
-                ]
-                if has_engaged:
-                    pie_rows.append({"user_type": "Engaged", "count": pie_engaged})
-
-                pie_df = pd.DataFrame(pie_rows)
-                pie_df = pie_df[pie_df["count"] > 0]
-                pie_df["percent"] = pie_df["count"] / max(1, int(pie_df["count"].sum())) * 100
-
-                nr_pie = (
-                    alt.Chart(pie_df)
-                    .mark_arc(innerRadius=55)
-                    .encode(
-                        theta=alt.Theta("count:Q", title="Users"),
-                        color=alt.Color("user_type:N", title="", sort=domain, scale=color_scale),
-                        tooltip=[
-                            alt.Tooltip("user_type:N", title="Type"),
-                            alt.Tooltip("count:Q", title="Users", format=","),
-                            alt.Tooltip("percent:Q", title="%", format=".1f"),
-                        ],
-                    )
-                    .properties(height=220)
-                )
-
                 nr_c1, nr_c2 = st.columns(2)
                 with nr_c1:
                     st.markdown(
-                        "##### Daily new vs returning (stacked)",
-                        help="For each day: new users first appear on that day; returning users were seen before that day.",
+                        "##### Daily new vs returning",
+                        help="New = first trace on that day. Returning = first trace before that day.",
                     )
-                    st.altair_chart(nr_chart, width="stretch")
+                    st.altair_chart(nr_bar, width="stretch")
                 with nr_c2:
                     st.markdown(
-                        "##### Total new vs returning (range)",
-                        help=(
-                            "Unique users in the selected date range. "
-                            "Returning = first seen before start date (excl. engaged). "
-                            "Daily chart values won't sum to these totals because a user active on multiple days is counted each day."
-                        ),
+                        "##### Total new vs returning",
+                        help="Unique users in the date range. New + Returning = total known users.",
                     )
                     st.altair_chart(nr_pie, width="stretch")
+
+                # ── Insight 2: Engaged vs Not Engaged ──
+                pie_engaged = len(segments.engaged_users) if has_user_first_seen else int(
+                    daily_segments["engaged_users"].sum()
+                )
+                pie_not_engaged = len(segments.not_engaged_users) if has_user_first_seen else int(
+                    daily_segments["not_engaged_users"].sum()
+                )
+                eng_bar, eng_pie = _user_segment_charts(
+                    daily_segments,
+                    "not_engaged_users", "engaged_users", 
+                    "Not Engaged", "Engaged",
+                    "#d0d5dd", "#12b76a", 
+                    pie_not_engaged, pie_engaged,
+                )
+                eng_c1, eng_c2 = st.columns(2)
+                with eng_c1:
+                    st.markdown(
+                        "##### Daily engaged vs not engaged",
+                        help="Engaged = ≥2 sessions with ≥2 prompts each. Applies to all users.",
+                    )
+                    st.altair_chart(eng_bar, width="stretch")
+                with eng_c2:
+                    st.markdown(
+                        "##### Total engaged vs not engaged",
+                        help="Unique users in the date range. Engaged + Not Engaged = total known users.",
+                    )
+                    st.altair_chart(eng_pie, width="stretch")
 
     def _norm_prompt(s: Any) -> str:
         if not isinstance(s, str):

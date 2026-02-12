@@ -1,12 +1,15 @@
 """Tests for utils.user_segments helpers.
 
+Two independent dimensions:
+  - Dimension 1 (acquisition): New vs Returning
+  - Dimension 2 (engagement): Engaged vs Not Engaged
+
 Verifies:
-- Mutual exclusivity: New ∩ Returning ∩ Engaged = ∅
-- Partition: New + Returning + Engaged = Total known users
-- Engaged ⊂ users with first_seen < start_date
-- Daily new sum == unique new users who were active on their first_seen_date
-- Daily segments are mutually exclusive and sum to day total
+- Each dimension is a complete binary partition of known users
+- The two dimensions are independent (a New user can be Engaged)
+- Daily chart classifications are correct per day
 - Date type mismatches (Timestamp vs date) don't break comparisons
+- Summary (pie) and daily chart relationship is well-defined
 """
 
 from __future__ import annotations
@@ -49,6 +52,20 @@ def _make_traces(
 
 def _make_first_seen(rows: list[dict[str, Any]]) -> pd.DataFrame:
     return pd.DataFrame(rows)
+
+
+def _engaged_trace_rows(user_id: str, date_str: str) -> list[dict]:
+    """Generate trace rows that make a user 'engaged': 2 sessions × 2 prompts."""
+    rows = []
+    for s in range(2):
+        for p in range(2):
+            rows.append({
+                "user_id": user_id,
+                "session_id": f"{user_id}_s{s}",
+                "trace_id": f"{user_id}_s{s}_t{p}",
+                "date": date_str,
+            })
+    return rows
 
 
 # ---------------------------------------------------------------------------
@@ -149,118 +166,91 @@ class TestBuildFirstSeenLookup:
 
 
 # ---------------------------------------------------------------------------
-# classify_user_segments
+# classify_user_segments — two independent dimensions
 # ---------------------------------------------------------------------------
 
 
-def _engaged_trace_rows(user_id: str, date_str: str) -> list[dict]:
-    """Generate trace rows that make a user 'engaged': 2 sessions × 2 prompts."""
-    rows = []
-    for s in range(2):
-        for p in range(2):
-            rows.append({
-                "user_id": user_id,
-                "session_id": f"{user_id}_s{s}",
-                "trace_id": f"{user_id}_s{s}_t{p}",
-                "date": date_str,
-            })
-    return rows
-
-
 class TestClassifyUserSegments:
-    def test_mutually_exclusive_and_exhaustive(self):
-        """New + Returning + Engaged + Unknown = all active users."""
-        rows = [
-            # u1: returning, first seen before start
-            {"user_id": "u1", "session_id": "s1", "trace_id": "t1", "date": "2024-06-05"},
-            # u2: new, first seen within range
-            {"user_id": "u2", "session_id": "s2", "trace_id": "t2", "date": "2024-06-15"},
-        ]
-        # Make u1 engaged (2 sessions × 2 prompts)
-        rows += _engaged_trace_rows("u1", "2024-06-05")
-        df = _make_traces(rows)
-        fs_df = _make_first_seen([
-            {"user_id": "u1", "first_seen": "2024-04-01T00:00:00Z"},
-            {"user_id": "u2", "first_seen": "2024-06-15T00:00:00Z"},
-        ])
-
-        seg = classify_user_segments(df, fs_df, START, END)
-
-        # Mutually exclusive
-        assert seg.new_users & seg.returning_users == set()
-        assert seg.new_users & seg.engaged_returning_users == set()
-        assert seg.returning_users & seg.engaged_returning_users == set()
-
-        # Exhaustive (excluding unknowns)
-        known = seg.new_users | seg.returning_users | seg.engaged_returning_users
-        assert known == {"u1", "u2"}
-
-        # u1 is engaged (not returning), u2 is new
-        assert seg.new_users == {"u2"}
-        assert seg.engaged_returning_users == {"u1"}
-        assert seg.returning_users == set()  # u1 moved to engaged
-
-    def test_returning_excludes_engaged(self):
-        """Returning set must not contain any engaged users."""
-        rows = []
-        # u1, u2: both returning (first seen before start)
-        # u1 is engaged, u2 is not
-        rows += _engaged_trace_rows("u1", "2024-06-05")
-        rows.append({"user_id": "u2", "session_id": "s_only", "trace_id": "t_only", "date": "2024-06-05"})
-        df = _make_traces(rows)
-        fs_df = _make_first_seen([
-            {"user_id": "u1", "first_seen": "2024-03-01T00:00:00Z"},
-            {"user_id": "u2", "first_seen": "2024-04-01T00:00:00Z"},
-        ])
-
-        seg = classify_user_segments(df, fs_df, START, END)
-
-        assert "u1" in seg.engaged_returning_users
-        assert "u1" not in seg.returning_users
-        assert "u2" in seg.returning_users
-        assert "u2" not in seg.engaged_returning_users
-
-    def test_new_plus_returning_plus_engaged_equals_total(self):
-        """N + R + E = total known users."""
+    def test_acquisition_dimension_is_partition(self):
+        """New + Returning = all known users (no overlap)."""
         rows = (
-            _engaged_trace_rows("engaged1", "2024-06-10")
+            _engaged_trace_rows("eng1", "2024-06-10")
             + [
-                {"user_id": "new1", "session_id": "sn1", "trace_id": "tn1", "date": "2024-06-10"},
-                {"user_id": "ret1", "session_id": "sr1", "trace_id": "tr1", "date": "2024-06-10"},
+                {"user_id": "new1", "session_id": "sn", "trace_id": "tn", "date": "2024-06-10"},
+                {"user_id": "ret1", "session_id": "sr", "trace_id": "tr", "date": "2024-06-10"},
             ]
         )
         df = _make_traces(rows)
         fs_df = _make_first_seen([
-            {"user_id": "engaged1", "first_seen": "2024-03-01T00:00:00Z"},
+            {"user_id": "eng1", "first_seen": "2024-03-01T00:00:00Z"},
             {"user_id": "new1", "first_seen": "2024-06-10T00:00:00Z"},
             {"user_id": "ret1", "first_seen": "2024-05-01T00:00:00Z"},
         ])
-
         seg = classify_user_segments(df, fs_df, START, END)
-        total_known = len(seg.new_users) + len(seg.returning_users) + len(seg.engaged_returning_users)
-        assert total_known == 3
 
-    def test_engaged_only_from_pre_start_users(self):
-        """A new user meeting engagement thresholds must NOT be classified as engaged."""
-        rows = _engaged_trace_rows("new_active", "2024-06-10")
+        assert seg.new_users & seg.returning_users == set()
+        assert seg.new_users | seg.returning_users == {"eng1", "new1", "ret1"}
+
+    def test_engagement_dimension_is_partition(self):
+        """Engaged + Not Engaged = all known users (no overlap)."""
+        rows = (
+            _engaged_trace_rows("eng1", "2024-06-10")
+            + [
+                {"user_id": "new1", "session_id": "sn", "trace_id": "tn", "date": "2024-06-10"},
+                {"user_id": "ret1", "session_id": "sr", "trace_id": "tr", "date": "2024-06-10"},
+            ]
+        )
         df = _make_traces(rows)
         fs_df = _make_first_seen([
-            {"user_id": "new_active", "first_seen": "2024-06-10T00:00:00Z"},
+            {"user_id": "eng1", "first_seen": "2024-03-01T00:00:00Z"},
+            {"user_id": "new1", "first_seen": "2024-06-10T00:00:00Z"},
+            {"user_id": "ret1", "first_seen": "2024-05-01T00:00:00Z"},
+        ])
+        seg = classify_user_segments(df, fs_df, START, END)
+
+        assert seg.engaged_users & seg.not_engaged_users == set()
+        assert seg.engaged_users | seg.not_engaged_users == {"eng1", "new1", "ret1"}
+
+    def test_dimensions_are_independent(self):
+        """A new user CAN be engaged. Dimensions don't constrain each other."""
+        rows = _engaged_trace_rows("new_eng", "2024-06-10")
+        rows.append({"user_id": "ret_not", "session_id": "s", "trace_id": "t", "date": "2024-06-10"})
+        df = _make_traces(rows)
+        fs_df = _make_first_seen([
+            {"user_id": "new_eng", "first_seen": "2024-06-10T00:00:00Z"},
+            {"user_id": "ret_not", "first_seen": "2024-05-01T00:00:00Z"},
         ])
 
         seg = classify_user_segments(df, fs_df, START, END)
-        assert "new_active" in seg.new_users
-        assert "new_active" not in seg.engaged_returning_users
+
+        # new_eng is New AND Engaged
+        assert "new_eng" in seg.new_users
+        assert "new_eng" in seg.engaged_users
+
+        # ret_not is Returning AND Not Engaged
+        assert "ret_not" in seg.returning_users
+        assert "ret_not" in seg.not_engaged_users
+
+    def test_returning_user_can_be_engaged(self):
+        rows = _engaged_trace_rows("ret_eng", "2024-06-10")
+        df = _make_traces(rows)
+        fs_df = _make_first_seen([
+            {"user_id": "ret_eng", "first_seen": "2024-03-01T00:00:00Z"},
+        ])
+        seg = classify_user_segments(df, fs_df, START, END)
+
+        assert "ret_eng" in seg.returning_users
+        assert "ret_eng" in seg.engaged_users
 
 
 # ---------------------------------------------------------------------------
-# build_daily_user_segments
+# build_daily_user_segments — two independent dimension pairs per day
 # ---------------------------------------------------------------------------
 
 
 class TestBuildDailyUserSegments:
     def _simple_setup(self) -> tuple[pd.DataFrame, dict[str, Any], set[str]]:
-        """3 users: new (u_new), returning (u_ret), engaged (u_eng).
+        """3 users: new (u_new), returning (u_ret), engaged returning (u_eng).
 
         All active on 2024-06-05 and 2024-06-06.
         u_new's first_seen_date is 2024-06-05.
@@ -283,39 +273,40 @@ class TestBuildDailyUserSegments:
         engaged = {"u_eng"}
         return df, fs, engaged
 
-    def test_daily_mutual_exclusivity(self):
-        """On each day the three categories should be mutually exclusive."""
+    def test_acquisition_dimension_sums_to_total_each_day(self):
         df, fs, engaged = self._simple_setup()
         daily = build_daily_user_segments(df, fs, engaged)
-
         for _, row in daily.iterrows():
-            total = row["new_users"] + row["returning_users"] + row["engaged_users"]
-            assert total == 3  # all 3 users active each day
+            assert row["new_users"] + row["returning_users"] == 3
+
+    def test_engagement_dimension_sums_to_total_each_day(self):
+        df, fs, engaged = self._simple_setup()
+        daily = build_daily_user_segments(df, fs, engaged)
+        for _, row in daily.iterrows():
+            assert row["engaged_users"] + row["not_engaged_users"] == 3
 
     def test_new_only_on_first_seen_date(self):
-        """u_new should be 'new' on June 5 and 'returning' on June 6."""
+        """u_new is New on June 5, Returning on June 6."""
         df, fs, engaged = self._simple_setup()
         daily = build_daily_user_segments(df, fs, engaged)
 
         day1 = daily[daily["date"] == datetime.date(2024, 6, 5)].iloc[0]
         day2 = daily[daily["date"] == datetime.date(2024, 6, 6)].iloc[0]
 
-        # Day 1: u_new=new, u_ret=returning, u_eng=engaged
         assert day1["new_users"] == 1
-        assert day1["returning_users"] == 1
-        assert day1["engaged_users"] == 1
+        assert day1["returning_users"] == 2
 
-        # Day 2: u_new is now returning (first_seen < today), u_ret=returning, u_eng=engaged
         assert day2["new_users"] == 0
-        assert day2["returning_users"] == 2  # u_new + u_ret
-        assert day2["engaged_users"] == 1
+        assert day2["returning_users"] == 3  # u_new is now returning
 
-    def test_daily_new_sum_equals_unique_new_active_on_first_seen(self):
-        """Sum of daily new users = number of new users active on their first_seen_date."""
+    def test_engagement_is_constant_across_days(self):
+        """u_eng is engaged on both days (engagement doesn't change per day)."""
         df, fs, engaged = self._simple_setup()
         daily = build_daily_user_segments(df, fs, engaged)
-        # Only u_new is new, active on first_seen_date June 5
-        assert int(daily["new_users"].sum()) == 1
+
+        for _, row in daily.iterrows():
+            assert row["engaged_users"] == 1
+            assert row["not_engaged_users"] == 2
 
     def test_timestamp_vs_date_no_mismatch(self):
         """Dates stored as Timestamps in df should still compare correctly."""
@@ -323,34 +314,12 @@ class TestBuildDailyUserSegments:
             {"user_id": "u1", "session_id": "s1", "trace_id": "t1", "date": pd.Timestamp("2024-06-05", tz="UTC")},
         ]
         df = pd.DataFrame(rows)
-        # Intentionally leave date as Timestamp (don't convert to .date())
         fs = {"u1": datetime.date(2024, 6, 5)}
 
         daily = build_daily_user_segments(df, fs, set())
         assert len(daily) == 1
         assert daily.iloc[0]["new_users"] == 1
-
-    def test_engaged_user_not_classified_as_new_even_on_first_seen(self):
-        """Edge case: engaged user active on first_seen_date.
-
-        first_seen_date < start_date, so they should never be 'new'.
-        On their first_seen_date (which is before start_date), they wouldn't
-        appear in traces anyway. But if they did, first_seen_date == date
-        would trigger is_new. This is correct because first_seen_date IS that
-        day. The key invariant is that engaged users have first_seen < start,
-        so they can't be new in the summary. In the daily chart, if somehow
-        first_seen_date == date AND user is engaged, is_new takes precedence.
-        This is an edge case that only arises if traces include pre-start dates.
-        """
-        rows = [
-            {"user_id": "u_eng", "session_id": "s1", "trace_id": "t1", "date": "2024-06-05"},
-        ]
-        df = _make_traces(rows)
-        fs = {"u_eng": datetime.date(2024, 4, 1)}  # well before June 5
-        daily = build_daily_user_segments(df, fs, {"u_eng"})
-
-        assert daily.iloc[0]["engaged_users"] == 1
-        assert daily.iloc[0]["new_users"] == 0
+        assert daily.iloc[0]["not_engaged_users"] == 1
 
     def test_empty_dataframe(self):
         df = pd.DataFrame(columns=["date", "user_id", "session_id", "trace_id"])
@@ -389,39 +358,35 @@ class TestConsistency:
         ])
         return df, fs_df
 
-    def test_summary_segments_are_disjoint(self):
+    def test_acquisition_partition_matches_summary(self):
         df, fs_df = self._build_scenario()
         seg = classify_user_segments(df, fs_df, START, END)
 
-        all_sets = [seg.new_users, seg.returning_users, seg.engaged_returning_users]
-        for i, a in enumerate(all_sets):
-            for j, b in enumerate(all_sets):
-                if i != j:
-                    assert a & b == set(), f"Sets {i} and {j} overlap: {a & b}"
+        assert seg.new_users & seg.returning_users == set()
+        assert seg.new_users | seg.returning_users == {"new1", "ret1", "eng1"}
 
-    def test_summary_partition(self):
+    def test_engagement_partition_matches_summary(self):
         df, fs_df = self._build_scenario()
         seg = classify_user_segments(df, fs_df, START, END)
 
-        total_known = seg.new_users | seg.returning_users | seg.engaged_returning_users
-        assert total_known == {"new1", "ret1", "eng1"}
+        assert seg.engaged_users & seg.not_engaged_users == set()
+        assert seg.engaged_users | seg.not_engaged_users == {"new1", "ret1", "eng1"}
 
     def test_daily_new_sum_leq_summary_new(self):
-        """Daily new sum ≤ summary new (equal when every new user is active on first_seen_date)."""
+        """Daily new sum ≤ summary new."""
         df, fs_df = self._build_scenario()
         seg = classify_user_segments(df, fs_df, START, END)
-        daily = build_daily_user_segments(df, seg.first_seen_by_user, seg.engaged_returning_users)
+        daily = build_daily_user_segments(df, seg.first_seen_by_user, seg.engaged_users)
 
         daily_new_sum = int(daily["new_users"].sum())
         summary_new = len(seg.new_users)
         assert daily_new_sum <= summary_new
-        # In this scenario, new1 IS active on their first_seen_date (June 3)
+        # new1 IS active on first_seen_date (June 3)
         assert daily_new_sum == summary_new
 
     def test_daily_new_sum_less_when_not_active_on_first_seen(self):
         """If a new user is NOT active on their first_seen_date, daily sum < summary."""
         rows = [
-            # new1 first seen June 3, but only active on June 5
             {"user_id": "new1", "session_id": "s1", "trace_id": "t1", "date": "2024-06-05"},
         ]
         df = _make_traces(rows)
@@ -430,23 +395,23 @@ class TestConsistency:
         ])
 
         seg = classify_user_segments(df, fs_df, START, END)
-        daily = build_daily_user_segments(df, seg.first_seen_by_user, seg.engaged_returning_users)
+        daily = build_daily_user_segments(df, seg.first_seen_by_user, seg.engaged_users)
 
-        assert len(seg.new_users) == 1  # new1 is new in summary
-        assert int(daily["new_users"].sum()) == 0  # but not "new" on any active day
-        # On June 5, first_seen_date(June 3) != date(June 5) → classified as returning
+        assert len(seg.new_users) == 1
+        assert int(daily["new_users"].sum()) == 0
+        # On June 5, first_seen_date(June 3) != date(June 5) → returning
 
-    def test_pie_matches_summary(self):
-        """Pie values (unique users) should match summary counts exactly."""
+    def test_pie_matches_summary_both_dimensions(self):
+        """Pie values should match summary counts for both dimensions."""
         df, fs_df = self._build_scenario()
         seg = classify_user_segments(df, fs_df, START, END)
 
-        # These are exactly what the pie chart uses
-        pie_new = len(seg.new_users)
-        pie_returning = len(seg.returning_users)
-        pie_engaged = len(seg.engaged_returning_users)
+        # Dimension 1
+        assert len(seg.new_users) + len(seg.returning_users) == 3
+        assert seg.new_users == {"new1"}
+        assert seg.returning_users == {"ret1", "eng1"}
 
-        assert pie_new == 1  # new1
-        assert pie_returning == 1  # ret1 (eng1 moved to engaged)
-        assert pie_engaged == 1  # eng1
-        assert pie_new + pie_returning + pie_engaged == 3
+        # Dimension 2
+        assert len(seg.engaged_users) + len(seg.not_engaged_users) == 3
+        assert seg.engaged_users == {"eng1"}
+        assert seg.not_engaged_users == {"new1", "ret1"}

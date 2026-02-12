@@ -1,22 +1,19 @@
-"""User segmentation helpers for New / Returning / Engaged classification.
+"""User segmentation helpers – two independent dimensions.
 
-Definitions
------------
+Dimension 1 – Acquisition (New vs Returning)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 - **New**: users whose first-ever trace was on or after ``start_date``.
-- **Returning**: users whose first-ever trace was before ``start_date`` **and**
-  who are **not** in the engaged set.
-- **Engaged**: the subset of users whose first trace was before ``start_date``
-  who had ≥2 sessions, each containing ≥2 prompts, within the loaded trace
-  window.
+- **Returning**: users whose first-ever trace was before ``start_date``.
 
-The three sets are mutually exclusive: ``New + Returning + Engaged = Total``
-(excluding unknowns).
+Dimension 2 – Engagement (Engaged vs Not Engaged)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+- **Engaged**: users with ≥2 sessions, each containing ≥2 prompts, within the
+  loaded trace window.  This applies to **all** users (new and returning).
+- **Not Engaged**: everyone else.
 
-For daily charts every user active on a given day is classified as:
-- *New* if their ``first_seen_date`` equals that day.
-- *Returning* (non-engaged) if their ``first_seen_date`` is earlier and they
-  are **not** in the engaged set.
-- *Engaged* if they are in the engaged set and ``first_seen_date`` < that day.
+Each dimension is a simple binary split.  The two dimensions are independent:
+a user can be New+Engaged, New+Not-Engaged, Returning+Engaged, or
+Returning+Not-Engaged.
 """
 
 from __future__ import annotations
@@ -170,16 +167,25 @@ def build_first_seen_lookup(
 
 @dataclass
 class UserSegments:
-    """Container for the three mutually exclusive user segments.
+    """Container for two independent user-segmentation dimensions.
 
-    ``new_users | returning_users | engaged_returning_users`` are disjoint.
-    ``returning_users`` does **not** include engaged users.
+    Dimension 1 (acquisition): ``new_users`` and ``returning_users`` are
+    disjoint and together cover all known users.
+
+    Dimension 2 (engagement): ``engaged_users`` and ``not_engaged_users`` are
+    disjoint and together cover all known users.
+
+    The two dimensions are independent – a user can be in any combination.
     """
 
     first_seen_by_user: dict[str, Any] = field(default_factory=dict)
+    # Dimension 1: acquisition
     new_users: set[str] = field(default_factory=set)
     returning_users: set[str] = field(default_factory=set)
-    engaged_returning_users: set[str] = field(default_factory=set)
+    # Dimension 2: engagement
+    engaged_users: set[str] = field(default_factory=set)
+    not_engaged_users: set[str] = field(default_factory=set)
+    # Metadata
     unknown_users: set[str] = field(default_factory=set)
     filled_from_window: int = 0
 
@@ -190,7 +196,7 @@ def classify_user_segments(
     start_date,
     end_date,
 ) -> UserSegments:
-    """One-stop classification of active users into New / Returning / Engaged.
+    """Classify active users along two independent dimensions.
 
     See module docstring for precise definitions.
     """
@@ -199,7 +205,8 @@ def classify_user_segments(
     )
 
     active_users = _clean_id_set(df, "user_id") if "user_id" in df.columns else set()
-    unknown = active_users - set(first_seen_by_user)
+    known_users = set(first_seen_by_user)
+    unknown = active_users - known_users
 
     fs_dates = pd.Series(list(first_seen_by_user.values()))
     if fs_dates.empty:
@@ -209,21 +216,24 @@ def classify_user_segments(
             filled_from_window=filled,
         )
 
+    # --- Dimension 1: acquisition ---
     new_mask = (fs_dates >= start_date) & (fs_dates <= end_date)
     returning_mask = fs_dates < start_date
 
     uids = list(first_seen_by_user.keys())
     new_users = {uids[i] for i, v in enumerate(new_mask) if v}
-    all_returning = {uids[i] for i, v in enumerate(returning_mask) if v}
+    returning_users = {uids[i] for i, v in enumerate(returning_mask) if v}
 
-    engaged = compute_engaged_users(df, restrict_to=all_returning)
-    returning_users = all_returning - engaged
+    # --- Dimension 2: engagement (applies to ALL users) ---
+    engaged = compute_engaged_users(df)
+    not_engaged = known_users - engaged - unknown
 
     return UserSegments(
         first_seen_by_user=first_seen_by_user,
         new_users=new_users,
         returning_users=returning_users,
-        engaged_returning_users=engaged,
+        engaged_users=engaged,
+        not_engaged_users=not_engaged,
         unknown_users=unknown,
         filled_from_window=filled,
     )
@@ -238,17 +248,23 @@ def build_daily_user_segments(
     first_seen_by_user: dict[str, Any],
     engaged_users: set[str],
 ) -> pd.DataFrame:
-    """Produce a per-day DataFrame with columns ``new_users``, ``returning_users``, ``engaged_users``.
+    """Produce a per-day DataFrame with two independent dimension pairs.
 
-    Classification per user per day
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Columns returned:
+    - ``new_users`` / ``returning_users``  (Dimension 1 – acquisition)
+    - ``engaged_users`` / ``not_engaged_users`` (Dimension 2 – engagement)
+
+    Dimension 1 per day
+    ~~~~~~~~~~~~~~~~~~~
     - **New** on day *D*: ``first_seen_date == D``
-    - **Engaged** on day *D*: user is in *engaged_users* **and** ``first_seen_date < D``
-      (engaged is always a subset of returning).
-    - **Returning** on day *D*: ``first_seen_date < D`` and **not** engaged.
+    - **Returning** on day *D*: ``first_seen_date < D``
 
-    The three categories are mutually exclusive and sum to the total distinct
-    users active that day (who have a known first-seen date).
+    Dimension 2 per day
+    ~~~~~~~~~~~~~~~~~~~
+    - **Engaged** on day *D*: user is in *engaged_users*.
+    - **Not Engaged** on day *D*: user is **not** in *engaged_users*.
+
+    Each dimension sums to the total distinct users active that day.
     """
     if "date" not in df.columns or "user_id" not in df.columns:
         return pd.DataFrame()
@@ -271,9 +287,13 @@ def build_daily_user_segments(
     ).dt.date.values
     base = base.dropna(subset=["date", "first_seen_date"])
 
+    # Dimension 1: acquisition
     base["is_new"] = base["first_seen_date"] == base["date"]
-    base["is_engaged"] = base["user_id"].isin(engaged_users) & ~base["is_new"]
-    base["is_returning"] = ~base["is_new"] & ~base["is_engaged"]
+    base["is_returning"] = ~base["is_new"]
+
+    # Dimension 2: engagement (independent of acquisition)
+    base["is_engaged"] = base["user_id"].isin(engaged_users)
+    base["is_not_engaged"] = ~base["is_engaged"]
 
     daily = (
         base.groupby("date")
@@ -281,11 +301,12 @@ def build_daily_user_segments(
             new_users=("is_new", "sum"),
             returning_users=("is_returning", "sum"),
             engaged_users=("is_engaged", "sum"),
+            not_engaged_users=("is_not_engaged", "sum"),
         )
         .reset_index()
         .sort_values("date")
     )
-    for col in ("new_users", "returning_users", "engaged_users"):
+    for col in ("new_users", "returning_users", "engaged_users", "not_engaged_users"):
         daily[col] = pd.to_numeric(daily[col], errors="coerce").fillna(0).astype(int)
 
     return daily
