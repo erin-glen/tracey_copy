@@ -76,3 +76,10 @@ In that tab, open **⚙️ LLM Settings** to configure:
 ### Editable prompts
 
 Each sub-tab exposes an **📝 Edit system prompt** expander so you can inspect and tweak the prompts used for Gemini.
+
+## Tests
+Limited number of tests are provided for charts and user segments. To run them:
+
+```bash
+uv run --with pytest pytest tests/test_charts.py -v
+```
