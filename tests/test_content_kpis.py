@@ -352,6 +352,112 @@ class TestContentKPIs(unittest.TestCase):
         row = compute_derived_interactions(traces).iloc[0]
         self.assertFalse(bool(row["metric_sanity_fail"]))
 
+    def test_flux_query_classified_as_data_lookup_without_question_mark(self):
+        """Regression: noun-phrase carbon/flux queries should not fall into intent_primary='other'."""
+        traces = [
+            {
+                "id": "t13",
+                "timestamp": "2026-01-12T00:00:00Z",
+                "sessionId": "s13",
+                "userId": "u13",
+                "input": {"messages": [{"role": "user", "content": "Forest greenhouse gas net flux for Winchester"}]},
+                "output": {
+                    "messages": [{"role": "assistant", "content": "Here are the net flux results."}],
+                    "result": {
+                        "aoi": {"name": "Winchester", "type": "city"},
+                        "dataset_name": "Forest GHG Net Flux",
+                    },
+                    "raw_data": {"q1": {"0": {"value": 1}}},
+                },
+                "metadata": {"thread_id": "th13"},
+            }
+        ]
+
+        row = compute_derived_interactions(traces).iloc[0]
+        self.assertEqual(row["intent_primary"], "data_lookup")
+        self.assertTrue(bool(row["analysis_executed"]))
+
+    def test_confidence_alerts_prompt_is_not_conceptual(self):
+        """Regression: 'confidence' used as an alert filter should remain a data intent."""
+        traces = [
+            {
+                "id": "t14",
+                "timestamp": "2026-01-13T00:00:00Z",
+                "sessionId": "s14",
+                "userId": "u14",
+                "input": {"messages": [{"role": "user", "content": "Show me high confidence GLAD alerts in Brazil"}]},
+                "output": {
+                    "messages": [{"role": "assistant", "content": "Here are the alerts."}],
+                    "result": {
+                        "aoi": {"name": "Brazil", "type": "country"},
+                        "dataset_name": "GLAD Alerts",
+                    },
+                },
+                "metadata": {"thread_id": "th14"},
+            }
+        ]
+
+        row = compute_derived_interactions(traces).iloc[0]
+        self.assertEqual(row["intent_primary"], "data_lookup")
+        self.assertNotEqual(row["intent_primary"], "conceptual_or_capability")
+
+    def test_needs_user_input_detected_even_when_requires_aoi_is_false(self):
+        """Regression: if the assistant asks for a missing location, mark needs_user_input even if requires_aoi was False."""
+        traces = [
+            {
+                "id": "t15",
+                "timestamp": "2026-01-14T00:00:00Z",
+                "sessionId": "s15",
+                "userId": "u15",
+                "input": {"messages": [{"role": "user", "content": "Forest greenhouse gas net flux for Winchester"}]},
+                "output": {
+                    "messages": [
+                        {
+                            "role": "assistant",
+                            "content": "I found multiple locations named Winchester. Could you please specify which location you mean?",
+                        }
+                    ],
+                    "result": {
+                        "dataset_name": "Forest GHG Net Flux",
+                    },
+                },
+                "metadata": {"thread_id": "th15"},
+            }
+        ]
+
+        row = compute_derived_interactions(traces).iloc[0]
+        self.assertTrue(bool(row["needs_user_input"]))
+        self.assertEqual(row["completion_state"], "needs_user_input")
+        self.assertIn("missing_aoi", str(row["needs_user_input_reason"]))
+
+    def test_no_data_detects_global_scope_not_supported(self):
+        """Regression: global/continental scope limitations should be classified as no_data/unsupported (not answer)."""
+        traces = [
+            {
+                "id": "t16",
+                "timestamp": "2026-01-15T00:00:00Z",
+                "sessionId": "s16",
+                "userId": "u16",
+                "input": {"messages": [{"role": "user", "content": "Show me tree cover loss globally"}]},
+                "output": {
+                    "messages": [
+                        {
+                            "role": "assistant",
+                            "content": "Sorry — I cannot currently support requests for the entire world at once. Please select a country or region.",
+                        }
+                    ],
+                    "result": {},
+                },
+                "metadata": {"thread_id": "th16"},
+            }
+        ]
+
+        row = compute_derived_interactions(traces).iloc[0]
+        self.assertEqual(row["answer_type"], "no_data")
+        # Narrowing global scope is a blocking clarification even though the message contains no-data/unsupported language.
+        self.assertEqual(row["completion_state"], "needs_user_input")
+        self.assertIn("missing_aoi", str(row["needs_user_input_reason"]))
+
 
 if __name__ == "__main__":
     unittest.main()
