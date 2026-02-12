@@ -422,12 +422,29 @@ def _looks_like_conceptual_or_capability(prompt: str) -> bool:
     ):
         return True
 
-    # Validation / QA / methodology questions about the analysis
+    # Validation / QA / methodology questions about the analysis.
+    #
+    # NOTE: Avoid misclassifying alert "confidence" filters (e.g., "high confidence alerts")
+    # as conceptual. "Confidence" by itself is too overloaded; only treat it as conceptual
+    # when the user is asking about confidence *in the result/analysis*.
     if re.search(
-        r"\b(can this be wrong|could this be wrong|is this wrong|is that wrong|how accurate|accuracy|confidence|uncertain(?:ty)?|margin of error|error bars?|is this a general analysis|general analysis|did you analy[sz]e|how did you analy[sz]e|how was this analy[sz]ed|assumptions?)\b",
+        r"\b(can this be wrong|could this be wrong|is this wrong|is that wrong|"
+        r"how accurate|accuracy|uncertain(?:ty)?|margin of error|error bars?|"
+        r"is this a general analysis|general analysis|did you analy[sz]e|"
+        r"how did you analy[sz]e|how was this analy[sz]ed|assumptions?|methodolog(?:y|ies)|methods?)\b",
         p,
     ):
         return True
+
+    if "confidence" in p:
+        # "Confidence alerts" / "high confidence GLAD alerts" should stay as a data intent.
+        is_alert_conf_filter = bool(re.search(r"\b(alert|alerts|dist[- ]?alert|glad|radd|viirs)\b", p))
+        if not is_alert_conf_filter and re.search(
+            r"\b(how confident|confidence (?:in|about|that)|confidence interval|confidence band|"
+            r"confidence level(?: of)? (?:this|the) (?:analysis|result|estimate))\b",
+            p,
+        ):
+            return True
 
     # Imagery requests are usually capability questions in GNW (not direct data intents)
     if re.search(r"\b(satellite images?|imagery|raw satellite)\b", p):
@@ -506,73 +523,98 @@ def _looks_like_trend_request(p_lower: str) -> bool:
     return False
 
 
-def _looks_like_data_lookup_request(p_lower: str) -> bool:
-    p = p_lower
-    if not p:
+def _looks_like_data_lookup_request(prompt: str) -> bool:
+    t = (prompt or "").strip().lower()
+    if not t:
         return False
 
     # Direct lookup verbs / question forms
-    if any(
-        k in p
-        for k in [
-            "show",
-            "map",
-            "display",
-            "give me",
-            "find",
-            "lookup",
-            "calculate",
-            "estimate",
-            "how much",
-            "how many",
-            "cuánto",
-            "cuanta",
-            "cuantos",
-            "cuantas",
-            "muestra",
-            "muéstrame",
-            "mostrar",
-            "dame",
-            "tunjukkan",
-            "berapa",
-        ]
+    if re.search(
+        r"\b(show|map|display|give me|list|find|lookup|look up|calculate|estimate|compute|derive|quantif(?:y|ies)|summari[sz]e|generate|produce)\b",
+        t,
     ):
         return True
 
-    # Domain keywords (keep this short; we just want to avoid falling into "other")
-    if any(
-        k in p
-        for k in [
-            "land cover",
-            "land use",
-            "uso del suelo",
-            "uso de suelo",
-            "cobertura",
-            "tree cover",
-            "forest loss",
-            "deforestation",
-            "deforestación",
-            "alerts",
-            "alertas",
-            "mangrove",
-            "manglar",
-            "manguezal",
-            "peatland",
-            "turbera",
-            "grassland",
-            "pastizal",
-            "hectare",
-            "hectares",
-            " ha ",
-        ]
-    ):
+    if re.search(r"\b(how much|how many|what is the|what are the|where is|which areas)\b", t):
         return True
 
-    # Generic question words
-    if "?" in p and re.search(
-        r"\b(what|where|when|which|how|cu[aá]nt|d[oó]nde|cu[aá]l|qu[eé]|c[oó]mo|apa|di mana|berapa)\b",
-        p,
-    ):
+    # Explicit comparison requests are still data intents (even if not time-series)
+    if re.search(r"\b(compare|comparison|versus|vs\.?|difference between|higher than|lower than|more than|less than)\b", t):
+        return True
+
+    # Common GNW dataset / metric keywords
+    domain_keywords = [
+        # Forest / land
+        "tree cover",
+        "tree cover loss",
+        "tree cover gain",
+        "forest loss",
+        "forest gain",
+        "deforestation",
+        "land cover",
+        "land use",
+        "natural lands",
+        "grassland",
+        "mangrove",
+        "peatland",
+        "restoration",
+        "regrowth",
+        # Alerts / fires
+        "alert",
+        "alerts",
+        "dist-alert",
+        "dist alert",
+        "glad",
+        "radd",
+        "viirs",
+        "fire",
+        "fires",
+        "burn",
+        "burned area",
+        "burnt area",
+        # Carbon / climate
+        "carbon",
+        "co2",
+        "emission",
+        "emissions",
+        "greenhouse",
+        "greenhouse gas",
+        "ghg",
+        "flux",
+        "net flux",
+        "biomass",
+        "aboveground",
+        "belowground",
+        "soil carbon",
+        "soil organic carbon",
+        # Biodiversity / habitat
+        "biodiversity",
+        "habitat",
+        "species",
+        "occurrence",
+        "range map",
+        # ES/PT (light)
+        "emisiones",
+        "emissão",
+        "emissoes",
+        "carbono",
+        "biomasa",
+        "biodiversidad",
+        "biodiversidade",
+        "hábitat",
+        "habitat",
+        "incendios",
+        "queimadas",
+    ]
+    if any(k in t for k in domain_keywords):
+        return True
+
+    # Units / quantities often signal a data lookup even without verbs.
+    if re.search(r"\b(ha|hectares?|km2|sq\s?km|percent|%)\b", t):
+        return True
+
+    # Bare year + metric keyword (e.g., "forest loss 2020 brazil")
+    if _YEAR_RE.search(t) and any(k in t for k in ["loss", "gain", "alert", "emission", "flux", "carbon", "land cover"]):
         return True
 
     return False
@@ -683,113 +725,173 @@ def _infer_requires(intent: str, prompt: str) -> dict[str, bool]:
 
 
 def _answer_type(
-    response: str,
-    response_missing: bool,
-    output_json_ok: bool,
-    level: str | None = None,
-    error_count: Any | None = None,
+    response: str, response_missing: bool, output_json_ok: bool, level: str | None = None, error_count: Any = None
 ) -> str:
-    """Classify completion type for KPI scoring.
+    """Coarse answer type classifier.
 
-    Important: do NOT treat the substring "error" as a failure signal.
+    Priority order:
+    1) Missing/empty outputs
+    2) Trace-level errors (Langfuse) / strong system failure markers
+    3) No-data / unsupported coverage messages
+    4) Normal answers
+
+    NOTE: Avoid treating generic words like "error" in explanatory contexts as model errors.
     """
     if response_missing:
         return "missing_output"
-
-    lvl = str(level or "").upper().strip()
-    if lvl == "ERROR":
+    if not output_json_ok and (level or "").upper() == "ERROR":
         return "model_error"
-    if isinstance(error_count, (int, float)) and error_count > 0:
+    if (level or "").upper() == "ERROR":
         return "model_error"
+    try:
+        if error_count is not None and float(error_count) > 0:
+            return "model_error"
+    except Exception:
+        pass
 
     t = (response or "").strip().lower()
-    if len(t) < 8:
+    if not t or len(t) < 20:
         return "empty_or_short"
 
-    if re.search(r"\b(traceback|exception|internal error|something went wrong|service unavailable|timed out|timeout)\b", t):
-        return "model_error"
+    # Strong system / processing failure markers (text-only fallback)
     if re.search(
-        r"\b(?:no data|no results|not (?:currently )?available|not found|"
+        r"\b(traceback|exception|internal error|unexpected error|something went wrong|technical (?:issue|problem)|service unavailable|timed out|timeout)\b",
+        t,
+    ):
+        return "model_error"
+
+    # No data / unsupported scope markers.
+    # Include explicit global/continental scope limitation language which is common in GNW.
+    if re.search(
+        r"\b(?:no data|no results|not (?:currently )?available|not found|no matching data|"
         r"could not (?:find|locate)|couldn't (?:find|locate)|"
         r"cannot (?:find|locate)|can't (?:find|locate)|unable to (?:find|locate)|"
-        r"(?:do not|don't|cannot|can't)\s+support|not supported|unsupported|"
-        r"outside (?:our|the) coverage)\b",
+        r"(?:do not|don't|cannot|can't)\s+(?:currently\s+)?support|"
+        r"not supported|unsupported|outside (?:our|the) coverage|outside coverage|"
+        r"unable to (?:process|handle).{0,40}\b(?:global|world(?:wide)?|entire world|whole world|continent(?:al)?)\b|"
+        r"\b(?:global|worldwide|continental|entire world|whole world)\b.{0,60}\b(?:not supported|unsupported|too large|can't|cannot|unable)\b)\b",
         t,
     ):
         return "no_data"
-    if not output_json_ok:
-        return "text_only"
+
+    # Chatty meta disclaimers about being an AI (not necessarily an error, but not a data answer either)
+    if re.search(r"\b(as an ai|as a language model|i do not have access to real time|i can't access real time)\b", t):
+        return "fallback"
+
     return "answer"
 
 
 def _needs_user_input(response: str, requires: dict[str, bool], struct: dict[str, Any]) -> tuple[bool, str]:
+    """Detect when the assistant is blocked on missing user-provided parameters.
+
+    This is intentionally conservative:
+    - We only emit needs_user_input when the assistant is explicitly asking the user
+      to clarify/provide/select something OR when there's strong AOI disambiguation language.
+    - We avoid triggering on polite follow-up offers ("Would you like...?") that appear
+      at the end of complete answers.
+
+    IMPORTANT: We do *not* rely solely on `requires_*` gating because prompt-level intent
+    inference can be wrong on short prompts. If the assistant is clearly asking for a missing
+    AOI/time/dataset, we mark needs_user_input even when the prompt-level requires flags were false.
+    """
     r = (response or "").strip()
+    if not r:
+        return False, ""
+
     rl = r.lower()
 
+    ask_verbs = re.compile(
+        r"\b(please|pls|could you|can you|which|what|select|choose|provide|specify|tell me|clarify|confirm|"
+        r"por favor|puedes|podr[ií]a(?:s)?|cu[aá]l|qu[eé]|selecciona|elige|indica|especifica|necesito|"
+        r"pode|voc[eê] pode|voce pode|qual|selecione|escolha|informe|especifique|preciso|"
+        r"tolong|mohon|bisa(?:kah)?|dapatkah|pilih|tentukan|perlu)\b"
+    )
+    aoi_terms = re.compile(
+        r"\b(aoi|area|location|place|region|polygon|country|state|province|district|county|municipality|"
+        r"[áa]rea|zona|ubicaci[oó]n|lugar|regi[oó]n|pa[ií]s|estado|provincia|municipio|"
+        r"local|regi[aã]o|prov[ií]ncia|munic[ií]pio|"
+        r"wilayah|daerah|lokasi|kawasan|provinsi|kabupaten|kota)\b"
+    )
+    time_terms = re.compile(
+        r"\b(time range|date range|timeframe|period|years?|months?|dates?|start|end|"
+        r"rango de tiempo|rango de fechas|periodo|per[ií]odo|a[nñ]os?|fechas?|inicio|fin|"
+        r"intervalo de tempo|anos?|datas?|in[ií]cio|fim|"
+        r"rentang waktu|periode|tahun|tanggal|mulai|akhir)\b"
+    )
+    dataset_terms = re.compile(
+        r"\b(dataset|data set|layer|layers|map layer|"
+        r"conjunto de datos|capa|capas|"
+        r"conjunto de dados|camada|camadas|"
+        r"lapisan)\b"
+    )
+
+    # Disambiguation: multiple location matches / "did you mean" / "which one"
+    disambig = re.compile(
+        r"\b(found|there (?:are|were)|i see)\b.{0,80}\b(multiple|several|two|2|three|3)\b.{0,80}\b(location|place|match|matches|options?|results?)\b"
+    )
+    did_you_mean = re.compile(r"\b(did you mean|do you mean)\b")
+    which_one = re.compile(r"\b(which one|which of (?:these|those)|choose one|select one)\b")
+
+    follow_up_offer = re.compile(
+        r"\b(would you like|do you want me to|want me to|should i|can i also|want a map|want a chart|want a table|"
+        r"te gustar[ií]a|quieres que|gostaria|quer que|queres que)\b"
+    )
+
+    # --- Structured missingness (independent of requires) -----------------
+    aoi_missing_struct = not bool(struct.get("aoi_selected_struct"))
+    time_missing_struct = not bool(struct.get("time_range_struct"))
+    dataset_missing_struct = not bool(struct.get("dataset_struct"))
+
+    # --- Response-driven asked field detection ----------------------------
+    asked_fields: list[str] = []
+
+    # AOI: explicit ask, or disambiguation cues
+    aoi_disambig = bool(disambig.search(rl) or did_you_mean.search(rl) or which_one.search(rl))
+    if aoi_disambig:
+        # If there are multiple candidates OR we simply have no AOI selected, treat as blocking.
+        if aoi_missing_struct or bool(struct.get("aoi_candidates_struct")) or int(struct.get("aoi_options_unique_count") or 0) > 1:
+            asked_fields.append("missing_aoi")
+
+    if ask_verbs.search(rl) and aoi_terms.search(rl) and not follow_up_offer.search(rl):
+        if aoi_missing_struct:
+            asked_fields.append("missing_aoi")
+
+    # Time
+    if ask_verbs.search(rl) and time_terms.search(rl) and not follow_up_offer.search(rl):
+        if time_missing_struct:
+            asked_fields.append("missing_time")
+
+    # Dataset
+    if ask_verbs.search(rl) and dataset_terms.search(rl) and not follow_up_offer.search(rl):
+        if dataset_missing_struct:
+            asked_fields.append("missing_dataset")
+
+    asked_fields = sorted(set(asked_fields))
+    if asked_fields:
+        reason = "multiple_missing" if len(asked_fields) > 1 else asked_fields[0]
+        return True, reason
+
+    # --- Requires-gated fallback (legacy behavior) -------------------------
     missing: list[str] = []
-    if requires.get("requires_aoi") and not struct.get("aoi_selected_struct"):
-        missing.append("aoi")
-    if requires.get("requires_time_range") and not struct.get("time_range_struct"):
-        missing.append("time")
-    if requires.get("requires_dataset") and not struct.get("dataset_struct"):
-        missing.append("dataset")
+    if requires.get("requires_aoi") and aoi_missing_struct:
+        missing.append("missing_aoi")
+    if requires.get("requires_time_range") and time_missing_struct:
+        missing.append("missing_time")
+    if requires.get("requires_dataset") and dataset_missing_struct:
+        missing.append("missing_dataset")
+
     if not missing:
         return False, ""
 
-    # Tight clarification detection. Avoid broad triggers like a bare "?" or common
-    # stop-words such as "to" (which appear in many polite follow-ups).
-    ask_verbs = re.compile(
-        r"\b(please|pls|could you|can you|need(?: you)?(?: to)?|i need|we need|select|choose|pick|specify|provide|clarify|confirm|which|por favor|podr[ií]as|puede(?:s)?|indica|especifica|aclara|confirma|selecciona|elige|pode(?:ria)?|voce|você|informe|selecione|escolha|preciso|tolong|mohon|bisa(?:kah)?|pilih|tentukan|perlu)\b",
-        re.I,
-    )
-    aoi_terms = re.compile(
-        r"\b(aoi|area|location(?:s)?|place(?:s)?|region(?:s)?|country|state|province|district|county|city|municipality|village|site|pa[ií]s|pais|estado|prov[ií]ncia|provincia|distrito|regi[oó]n|ciudad|municipio|ubicaci[oó]n|lugar|zona|negara|provinsi|kota|kabupaten|wilayah|lokasi|daerah)\b",
-        re.I,
-    )
-    time_terms = re.compile(
-        r"\b(time range|date range|timeframe|period|start date|end date|start|end|year(?:s)?|month(?:s)?|between|from|since|during|a[nñ]o(?:s)?|ano(?:s)?|mensual|anual|entre|desde|sejak|selama|antara|tahun(?:\b|\b.*))",
-        re.I,
-    )
-    dataset_terms = re.compile(r"\b(dataset|data set|layer|collection|capa|camada|conjunto de datos)\b", re.I)
-
-    # Location/dataset disambiguation language (plural-safe).
-    disambig = re.compile(
-        r"\b(multiple|several|more than one|two|2|three|3)\b.{0,120}\b(option(?:s)?|match(?:es)?|result(?:s)?|location(?:s)?|place(?:s)?)\b",
-        re.I,
-    )
-    did_you_mean = re.compile(r"\b(did you mean|do you mean|quisiste decir|quiere decir|voc[eê] quis dizer)\b", re.I)
-    follow_up_offer = re.compile(r"\b(would you like|do you want (?:me )?to|shall i)\b", re.I)
-
-    asked: list[str] = []
-    if "aoi" in missing:
-        if int(struct.get("aoi_options_unique_count") or 0) > 1 or bool(struct.get("aoi_candidates_struct")):
-            asked.append("aoi")
-        elif disambig.search(rl) or did_you_mean.search(rl):
-            asked.append("aoi")
-        elif ask_verbs.search(rl) and aoi_terms.search(rl):
-            asked.append("aoi")
-
-    if "time" in missing and ask_verbs.search(rl) and time_terms.search(rl):
-        asked.append("time")
-
-    if "dataset" in missing and ask_verbs.search(rl) and dataset_terms.search(rl):
-        asked.append("dataset")
-
-    if asked:
-        if len(set(asked)) > 1:
-            return True, "multiple_missing"
-        return True, f"missing_{asked[0]}"
-
-    # Generic clarification asks without an explicit field term.
+    # Generic clarification phrasing, gated on required missingness.
     generic_clarify = bool(
-        re.search(r"\b(clarify|clarification|more information|more info|additional info|need more details|provide more details)\b", rl)
-        or re.search(r"\b(aclara|aclaraci[oó]n|m[aá]s informaci[oó]n|detalles adicionales)\b", rl)
-        or re.search(r"\b(esclare(?:a|cer)|mais informa[cç][aã]o|detalhes adicionais)\b", rl)
+        re.search(r"\b(need|requires|required|necesito|preciso|perlu)\b", rl)
+        and re.search(r"\b(specify|provide|select|choose|clarify|especifica|indica|informe|tentukan|pilih)\b", rl)
     )
+
     if generic_clarify and not follow_up_offer.search(rl):
-        if len(missing) > 1:
-            return True, "multiple_missing"
-        return True, f"missing_{missing[0]}"
+        reason = "multiple_missing" if len(missing) > 1 else missing[0]
+        return True, reason
 
     return False, ""
 
