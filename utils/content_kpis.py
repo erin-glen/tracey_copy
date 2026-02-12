@@ -391,7 +391,7 @@ def _looks_like_parameter_refinement(prompt: str) -> bool:
 
 
 def _looks_like_conceptual_or_capability(prompt: str) -> bool:
-    """Detect capability/explanatory/metadata questions.
+    """Detect capability/explanatory/metadata/validation questions.
 
     These should generally *not* be scored as data_lookup/trend_over_time.
     """
@@ -403,16 +403,34 @@ def _looks_like_conceptual_or_capability(prompt: str) -> bool:
 
     # Capability/product questions
     if re.search(
-        r"\b(what can you do|what do you do|capabilit(?:y|ies)|limitations?|supported|help me with|how does (?:this|it) work)\b",
+        r"\b(what can you do|what do you do|capabilit(?:y|ies)|limitations?|supported|help me with|how does (?:this|it) work|how (?:do|can) (?:i|we) use|how can (?:i|we) use|what is this tool)\b",
+        p,
+    ):
+        return True
+
+    # Data export / access questions (often scored incorrectly as data intents)
+    if re.search(
+        r"\b(download|export|csv|geojson|shapefile|shape\s*file|kml|kmz|api|endpoint)\b",
         p,
     ):
         return True
 
     # Data provenance / metadata questions
     if re.search(
-        r"\b(where does .* data come from|data sources?|sources? of (?:the )?data|fuentes? de datos|de d[oó]nde vienen los datos|origem dos dados|sumber data)\b",
+        r"\b(where does .* data come from|data sources?|sources? of (?:the )?data|sources? of (?:the )?dataset|dataset sources?|citations?|cite|references?|fuentes? de datos|de d[oó]nde vienen los datos|origem dos dados|sumber data)\b",
         p,
     ):
+        return True
+
+    # Validation / QA / methodology questions about the analysis
+    if re.search(
+        r"\b(can this be wrong|could this be wrong|is this wrong|is that wrong|how accurate|accuracy|confidence|uncertain(?:ty)?|margin of error|error bars?|is this a general analysis|general analysis|did you analy[sz]e|how did you analy[sz]e|how was this analy[sz]ed|assumptions?)\b",
+        p,
+    ):
+        return True
+
+    # Imagery requests are usually capability questions in GNW (not direct data intents)
+    if re.search(r"\b(satellite images?|imagery|raw satellite)\b", p):
         return True
 
     # Definitional "what is" without an obvious AOI/time anchoring
@@ -421,7 +439,6 @@ def _looks_like_conceptual_or_capability(prompt: str) -> bool:
             return True
 
     return False
-
 
 def _looks_like_trend_request(p_lower: str) -> bool:
     p = p_lower
@@ -691,7 +708,14 @@ def _answer_type(
 
     if re.search(r"\b(traceback|exception|internal error|something went wrong|service unavailable|timed out|timeout)\b", t):
         return "model_error"
-    if re.search(r"\b(no data|no results|not available|not found|could not find|couldn't find|cannot find|can't find|unable to find|outside (?:our|the) coverage)\b", t):
+    if re.search(
+        r"\b(?:no data|no results|not (?:currently )?available|not found|"
+        r"could not (?:find|locate)|couldn't (?:find|locate)|"
+        r"cannot (?:find|locate)|can't (?:find|locate)|unable to (?:find|locate)|"
+        r"(?:do not|don't|cannot|can't)\s+support|not supported|unsupported|"
+        r"outside (?:our|the) coverage)\b",
+        t,
+    ):
         return "no_data"
     if not output_json_ok:
         return "text_only"
@@ -1075,8 +1099,7 @@ def compute_derived_interactions(traces: list[dict[str, Any]]) -> pd.DataFrame:
             and bool(struct.get("dataset_struct"))
         ):
             p_low = (prompt or "").lower()
-            is_long_time_window = pd.notna(time_window_days) and float(time_window_days) > 366.0
-            if _looks_like_trend_request(p_low) or (bool(struct.get("time_range_struct")) and is_long_time_window):
+            if _looks_like_trend_request(p_low):
                 intent_primary = "trend_over_time"
             else:
                 intent_primary = "data_lookup"
