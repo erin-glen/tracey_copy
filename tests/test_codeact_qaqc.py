@@ -1,13 +1,41 @@
 import unittest
+import importlib.util
+import sys
+import types
+from pathlib import Path
 
 import pandas as pd
 
-from utils.codeact_qaqc import (
-    add_codeact_qaqc_columns,
-    compute_codeact_template_id,
-    evaluate_param_consistency,
-    extract_code_param_signals,
-)
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _load_utils_module(module_name: str):
+    """Load a module from utils/<module_name>.py without importing utils/__init__.py."""
+    utils_pkg = sys.modules.get("utils")
+    if utils_pkg is None:
+        utils_pkg = types.ModuleType("utils")
+        utils_pkg.__path__ = [str(REPO_ROOT / "utils")]
+        sys.modules["utils"] = utils_pkg
+
+    full_name = f"utils.{module_name}"
+    if full_name in sys.modules:
+        return sys.modules[full_name]
+
+    module_path = REPO_ROOT / "utils" / f"{module_name}.py"
+    spec = importlib.util.spec_from_file_location(full_name, module_path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[full_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+codeact_qaqc = _load_utils_module("codeact_qaqc")
+add_codeact_qaqc_columns = codeact_qaqc.add_codeact_qaqc_columns
+compute_codeact_template_id = codeact_qaqc.compute_codeact_template_id
+evaluate_param_consistency = codeact_qaqc.evaluate_param_consistency
+extract_code_param_signals = codeact_qaqc.extract_code_param_signals
 
 
 class TestCodeactQAQC(unittest.TestCase):

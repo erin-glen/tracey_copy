@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from difflib import SequenceMatcher
 from collections import Counter
 from datetime import datetime, timezone
 from typing import Any
@@ -16,7 +17,7 @@ from utils.trace_parsing import (
     parse_trace_dt,
     slice_output_to_current_turn,
 )
-from utils.codeact_utils import decode_maybe_base64
+from utils.codeact_utils import iter_decoded_codeact_parts
 
 SCORED_INTENTS = {"trend_over_time", "data_lookup"}
 POSITIVE_ACK_PATTERNS = [
@@ -92,9 +93,38 @@ def _extract_struct_flags(output_obj: dict[str, Any] | None) -> dict[str, Any]:
     output_obj = output_obj or {}
     aoi = _find_first_key(output_obj, ("aoi", "selected_aoi", "selectedAOI"))
     aoi_selected = isinstance(aoi, dict) and bool(
-        str(aoi.get("name") or "").strip() or str(aoi.get("id") or "").strip()
+        str(aoi.get("name") or "").strip()
+        or str(aoi.get("id") or "").strip()
+        or str(aoi.get("src_id") or "").strip()
+        or str(aoi.get("gadm_id") or "").strip()
     )
-    aoi_candidates = bool(_find_first_key(output_obj, ("aoi_candidates", "candidates", "aois")))
+
+    aoi_options = _find_first_key(
+        output_obj, ("aoi_options", "aoiOptions", "aoi_candidates", "aoiCandidates", "candidates", "aois")
+    )
+    aoi_options_count = int(len(aoi_options)) if isinstance(aoi_options, list) else 0
+
+    def _aoi_opt_id(opt: Any) -> str:
+        if not isinstance(opt, dict):
+            return ""
+        inner = opt.get("aoi")
+        if isinstance(inner, dict):
+            for k in ("gadm_id", "src_id", "id", "name"):
+                v = inner.get(k)
+                if isinstance(v, str) and v.strip():
+                    return v.strip()
+        for k in ("gadm_id", "src_id", "id", "name"):
+            v = opt.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        return ""
+
+    aoi_options_unique_count = 0
+    if isinstance(aoi_options, list) and aoi_options:
+        ids = {i for i in (_aoi_opt_id(o) for o in aoi_options) if i}
+        aoi_options_unique_count = len(ids) if ids else len(aoi_options)
+
+    aoi_candidates = bool(aoi_options_unique_count > 1)
 
     time_start = _find_first_key(output_obj, ("time_start", "start", "start_date", "from"))
     time_end = _find_first_key(output_obj, ("time_end", "end", "end_date", "to"))
@@ -103,8 +133,25 @@ def _extract_struct_flags(output_obj: dict[str, Any] | None) -> dict[str, Any]:
     dataset_name = _extract_dataset_name(output_obj)
     dataset_struct = bool(dataset_name)
 
-    citations = _find_first_key(output_obj, ("citations", "sources", "sourceUrls", "references"))
+    citations = _find_first_key(
+        output_obj,
+        (
+            "citation",
+            "citations",
+            "sources",
+            "sourceUrls",
+            "source_urls",
+            "source_url",
+            "references",
+        ),
+    )
     citations_struct = bool(citations)
+
+    dataset_obj = _find_first_key(output_obj, ("dataset", "dataset_info", "datasetInfo", "layer", "collection"))
+    dataset_has_citation = False
+    if isinstance(dataset_obj, dict):
+        ds_cit = dataset_obj.get("citation") or dataset_obj.get("citations")
+        dataset_has_citation = bool(isinstance(ds_cit, str) and ds_cit.strip())
 
     aoi_name = ""
     aoi_type = ""
@@ -115,9 +162,12 @@ def _extract_struct_flags(output_obj: dict[str, Any] | None) -> dict[str, Any]:
     return {
         "aoi_selected_struct": aoi_selected,
         "aoi_candidates_struct": aoi_candidates,
+        "aoi_options_count": aoi_options_count,
+        "aoi_options_unique_count": aoi_options_unique_count,
         "time_range_struct": time_range_struct,
         "dataset_struct": dataset_struct,
         "citations_struct": citations_struct,
+        "dataset_has_citation": dataset_has_citation,
         "dataset_name": dataset_name,
         "aoi_name": aoi_name,
         "aoi_type": aoi_type,
@@ -127,36 +177,64 @@ def _extract_struct_flags(output_obj: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def _extract_dataset_name(output_obj: dict[str, Any]) -> str:
-    blocks = [
+    """Best-effort extraction of a dataset/layer name from heterogeneous output shapes.
+
+    Common GNW shapes include:
+    - output["dataset"] as a dict containing dataset_name
+    - output["result"]["dataset"] as a dict
+    - output["dataset_name"] as a top-level string
+
+    Important: avoid generic `name` matches outside a dataset/layer container (e.g., AOI name).
+    """
+
+    if not isinstance(output_obj, dict):
+        return ""
+
+    container_keys = ("dataset", "datasets", "layer", "layers", "collection")
+    name_keys = ("dataset_name", "datasetName", "layer_name", "layerName", "name", "title")
+    explicit_name_keys = ("dataset_name", "datasetName", "layer_name", "layerName")
+
+    def _extract_from_dataset_container(container: Any) -> str:
+        if isinstance(container, str) and container.strip():
+            return container.strip()
+        if isinstance(container, dict):
+            for k in name_keys:
+                v = container.get(k)
+                if isinstance(v, str) and v.strip():
+                    return v.strip()
+            nested = _find_first_key(container, explicit_name_keys)
+            if isinstance(nested, str) and nested.strip():
+                return nested.strip()
+            return ""
+        if isinstance(container, list):
+            for item in container:
+                name = _extract_from_dataset_container(item)
+                if name:
+                    return name
+        return ""
+
+    for direct_block in (
+        _find_first_key(output_obj, container_keys),
         _find_first_key(output_obj, ("dataset_info", "datasetInfo")),
-        _find_first_key(output_obj, ("result", "data", "payload")),
-        output_obj,
-    ]
-    key_candidates = (
-        "dataset_name",
-        "datasetName",
-        "dataset",
-        "datasets",
-        "layer",
-        "layers",
-        "layer_name",
-        "layerName",
-        "collection",
-        "name",
-        "title",
-    )
-    for block in blocks:
-        found = _find_first_key(block, key_candidates)
-        if isinstance(found, str) and found.strip():
-            return found.strip()
-        if isinstance(found, list):
-            for item in found:
-                if isinstance(item, str) and item.strip():
-                    return item.strip()
-                if isinstance(item, dict):
-                    name = _find_first_key(item, ("name", "title", "dataset_name", "layer_name"))
-                    if isinstance(name, str) and name.strip():
-                        return name.strip()
+    ):
+        name = _extract_from_dataset_container(direct_block)
+        if name:
+            return name
+
+    wrapper = _find_first_key(output_obj, ("result", "data", "payload"))
+    if isinstance(wrapper, dict):
+        for ck in container_keys:
+            name = _extract_from_dataset_container(_find_first_key(wrapper, (ck,)))
+            if name:
+                return name
+        nested = _find_first_key(wrapper, explicit_name_keys)
+        if isinstance(nested, str) and nested.strip():
+            return nested.strip()
+
+    found = _find_first_key(output_obj, explicit_name_keys)
+    if isinstance(found, str) and found.strip():
+        return found.strip()
+
     return ""
 
 
@@ -184,11 +262,55 @@ def _classify_intent(prompt: str) -> tuple[str, str]:
 
 
 def _infer_requires(intent: str, prompt: str) -> dict[str, bool]:
-    p = (prompt or "").lower()
+    """Infer which structured fields are required for an interaction.
+
+    This is intentionally conservative: it's used to score structural completeness and should
+    avoid spurious requirements (which inflate `needs_user_input` and `incomplete_answer`).
+    """
+    raw = prompt or ""
+    p = raw.lower()
+
+    if intent == "conceptual_or_capability":
+        return {
+            "requires_data": False,
+            "requires_aoi": False,
+            "requires_time_range": False,
+            "requires_dataset": False,
+        }
+
     requires_data = intent in SCORED_INTENTS
-    requires_aoi = intent in SCORED_INTENTS or any(k in p for k in ["in ", "for ", "country", "region"])
-    requires_time = intent == "trend_over_time" or any(k in p for k in ["over time", "between", "from", "to", "year"])
-    requires_dataset = intent in SCORED_INTENTS or "dataset" in p or "tree cover" in p
+    global_scope = bool(
+        re.search(
+            r"\b(global|worldwide|around the world|across the world|in the world|all countries|by country|per country|top\s+\d+\s+(?:countries|regions)|ranking)\b",
+            p,
+        )
+    )
+
+    place_tokens = [
+        "aoi", "location", "place", "region", "country", "state", "province", "district", "county", "city", "municipality",
+    ]
+    mentions_place = bool(re.search(r"\b(in|within|near|around|across)\b", p)) or any(t in p for t in place_tokens)
+    mentions_place = mentions_place or bool(
+        re.search(r"\bfor\s+(?!me\b|us\b|you\b|my\b|our\b|this\b|that\b)[A-Z][\w\-]+", raw)
+    )
+
+    if intent == "trend_over_time":
+        requires_aoi = not global_scope
+    elif intent == "data_lookup":
+        requires_aoi = mentions_place and not global_scope
+    else:
+        requires_aoi = False
+
+    requires_time = bool(
+        intent == "trend_over_time"
+        or re.search(r"\b(19\d{2}|20\d{2})\b", p)
+        or any(k in p for k in ["over time", "between", "since", "from", "to", "year", "annual", "monthly"])
+    )
+
+    requires_dataset = bool(
+        requires_data
+        or any(k in p for k in ["dataset", "layer", "tree cover", "grassland", "alert", "carbon", "emission"])
+    )
     return {
         "requires_data": requires_data,
         "requires_aoi": requires_aoi,
@@ -197,16 +319,34 @@ def _infer_requires(intent: str, prompt: str) -> dict[str, bool]:
     }
 
 
-def _answer_type(response: str, response_missing: bool, output_json_ok: bool) -> str:
-    t = (response or "").strip().lower()
+def _answer_type(
+    response: str,
+    response_missing: bool,
+    output_json_ok: bool,
+    level: str | None = None,
+    error_count: Any | None = None,
+) -> str:
+    """Classify completion type for KPI scoring.
+
+    Important: do NOT treat the substring "error" as a failure signal.
+    """
     if response_missing:
         return "missing_output"
-    if any(k in t for k in ["error", "exception", "failed", "unable"]):
+
+    lvl = str(level or "").upper().strip()
+    if lvl == "ERROR":
         return "model_error"
-    if any(k in t for k in ["no data", "not available", "could not find"]):
-        return "no_data"
+    if isinstance(error_count, (int, float)) and error_count > 0:
+        return "model_error"
+
+    t = (response or "").strip().lower()
     if len(t) < 8:
         return "empty_or_short"
+
+    if re.search(r"\b(traceback|exception|internal error|something went wrong|service unavailable|timed out|timeout)\b", t):
+        return "model_error"
+    if re.search(r"\b(no data|no results|not available|not found|could not find|couldn't find|cannot find|can't find|unable to find|outside (?:our|the) coverage)\b", t):
+        return "no_data"
     if not output_json_ok:
         return "text_only"
     return "answer"
@@ -221,13 +361,34 @@ def _needs_user_input(response: str, requires: dict[str, bool], struct: dict[str
         missing.append("time")
     if requires["requires_dataset"] and not struct["dataset_struct"]:
         missing.append("dataset")
-    asks_for_more = any(k in r for k in ["please specify", "can you clarify", "which", "what time range", "provide"]) or "?" in r
-    if missing and asks_for_more:
-        if len(missing) > 1:
-            return True, "multiple_missing"
-        only = missing[0]
-        return True, f"missing_{only}"
-    return False, ""
+    if not missing:
+        return False, ""
+
+    ask_verbs = re.compile(r"\b(please|pls|could you|can you|would you|need you to|select|choose|pick|specify|provide|clarify|confirm)\b", re.I)
+    aoi_terms = re.compile(r"\b(aoi|area|location|place|region|country|state|province|district|county|city|municipality)\b", re.I)
+    time_terms = re.compile(r"\b(time range|date range|timeframe|period|start date|end date|year|month|between|from\b|to\b)\b", re.I)
+    dataset_terms = re.compile(r"\b(dataset|layer|collection)\b", re.I)
+    disambig = re.compile(r"\b(multiple|several|more than one|two|2|three|3)\b.{0,80}\b(option|match|result|location|place)\b", re.I)
+
+    asked: list[str] = []
+    if "aoi" in missing:
+        if int(struct.get("aoi_options_unique_count") or 0) > 1 or struct.get("aoi_candidates_struct"):
+            asked.append("aoi")
+        elif disambig.search(r):
+            asked.append("aoi")
+        elif ask_verbs.search(r) and aoi_terms.search(r):
+            asked.append("aoi")
+    if "time" in missing and ask_verbs.search(r) and time_terms.search(r):
+        asked.append("time")
+    if "dataset" in missing and ask_verbs.search(r) and dataset_terms.search(r):
+        asked.append("dataset")
+
+    if not asked:
+        return False, ""
+    if len(set(asked)) > 1:
+        return True, "multiple_missing"
+    only = asked[0]
+    return True, f"missing_{only}"
 
 
 def _metric_sanity_fail(response: str) -> bool:
@@ -238,9 +399,26 @@ def _metric_sanity_fail(response: str) -> bool:
 
 
 def _classify_dataset_family(dataset_name: str) -> str:
+    """Bucket dataset names into a small, stable taxonomy."""
     d = (dataset_name or "").lower()
     if not d:
         return "unknown"
+
+    if "tree cover loss" in d or "deforestation" in d or "forest loss" in d:
+        if "driver" in d:
+            return "tree_cover_loss_drivers"
+        return "tree_cover_loss"
+    if "dist-alert" in d or "dist alert" in d or "alert" in d:
+        return "alerts"
+    if "land cover" in d or "land use" in d:
+        return "land_cover"
+    if "grassland" in d:
+        return "grassland"
+    if "natural lands" in d or "sbtn" in d:
+        return "natural_lands"
+    if "greenhouse" in d or "ghg" in d or "carbon" in d or "flux" in d:
+        return "ghg_carbon"
+
     if "tree" in d or "forest" in d:
         return "forest"
     if "climate" in d or "temperature" in d:
@@ -279,22 +457,20 @@ def _extract_codeact(output_obj: Any) -> dict[str, Any]:
     exec_outputs = 0
     uses_analytics_api = False
     decoded_chars_total = 0
-    for part in parts:
-        if not isinstance(part, dict):
-            continue
-        ptype = str(part.get("type") or "").lower()
-        if "code" in ptype:
+    analytics_host_re = re.compile(r"\banalytics\.globalnaturewatch\.org\b", re.IGNORECASE)
+
+    for part in iter_decoded_codeact_parts(parts):
+        ptype = str(part.get("type") or "").lower().strip()
+        decoded = str(part.get("decoded") or "")
+
+        if ptype in {"code_block", "code"} or "code_block" in ptype:
             code_blocks += 1
-        if "exec" in ptype or "output" in ptype:
+        if ptype in {"execution_output", "exec_output", "execution", "exec"} or "execution" in ptype:
             exec_outputs += 1
-        payload = part.get("content")
-        if payload in (None, ""):
-            payload = part.get("text")
-        decoded, _from_base64, _decode_error = decode_maybe_base64(payload)
-        decoded_text = str(decoded or "")
-        if "analytics.globalnaturewatch.org" in decoded_text.lower():
+
+        decoded_chars_total += len(decoded)
+        if analytics_host_re.search(decoded) or "/v1/query" in decoded.lower():
             uses_analytics_api = True
-        decoded_chars_total += len(decoded_text)
 
     return {
         "codeact_present": True,
@@ -312,37 +488,59 @@ def _completion_state(
     needs_user_input: bool,
     struct: dict[str, Any],
     requires: dict[str, bool],
+    metric_sanity_fail: bool,
+    has_citations: bool,
 ) -> tuple[str, bool, bool, str]:
     reasons: list[str] = []
-    struct_good_trend = False
-    struct_good_lookup = False
 
     if intent in SCORED_INTENTS:
-        if requires["requires_aoi"] and not struct["aoi_selected_struct"]:
-            reasons.append("missing_aoi_struct")
-        if requires["requires_time_range"] and not struct["time_range_struct"]:
-            reasons.append("missing_time_struct")
-        if requires["requires_dataset"] and not struct["dataset_struct"]:
-            reasons.append("missing_dataset_struct")
+        if requires["requires_aoi"] and not struct.get("aoi_selected_struct"):
+            reasons.append("missing_aoi")
+        if requires["requires_time_range"] and not struct.get("time_range_struct"):
+            reasons.append("missing_time")
+        if requires["requires_dataset"] and not struct.get("dataset_struct"):
+            reasons.append("missing_dataset")
 
-    if intent == "trend_over_time":
-        struct_good_trend = len(reasons) == 0
-    if intent == "data_lookup":
-        struct_good_lookup = len(reasons) == 0
+        if (
+            intent == "trend_over_time"
+            and requires.get("requires_data")
+            and not has_citations
+            and not needs_user_input
+        ):
+            reasons.append("no_citation")
 
-    if answer_type in {"missing_output", "model_error"}:
-        return "error", struct_good_trend, struct_good_lookup, "|".join(reasons)
-    if answer_type == "no_data":
-        return "no_data", struct_good_trend, struct_good_lookup, "|".join(reasons)
-    if needs_user_input:
-        return "needs_user_input", struct_good_trend, struct_good_lookup, "|".join(reasons)
-    if intent in SCORED_INTENTS and reasons:
-        return "incomplete_answer", struct_good_trend, struct_good_lookup, "|".join(reasons)
-    if answer_type in {"answer", "text_only", "empty_or_short"}:
-        return "complete_answer", struct_good_trend, struct_good_lookup, "|".join(reasons)
-    return "other", struct_good_trend, struct_good_lookup, "|".join(reasons)
+        if metric_sanity_fail:
+            reasons.append("metric_sanity")
+
+    if answer_type in {"missing_output", "model_error", "empty_or_short"}:
+        state = "error"
+    elif answer_type == "no_data":
+        state = "no_data"
+    elif needs_user_input:
+        state = "needs_user_input"
+    elif intent in SCORED_INTENTS and reasons:
+        state = "incomplete_answer"
+    elif answer_type in {"answer", "text_only"}:
+        state = "complete_answer"
+    else:
+        state = "other"
+
+    struct_good_trend = bool(intent == "trend_over_time" and state == "complete_answer")
+    struct_good_lookup = bool(intent == "data_lookup" and state == "complete_answer")
+
+    return state, struct_good_trend, struct_good_lookup, "|".join(reasons)
 
 
+
+
+def _similarity(a: str, b: str) -> float:
+    a = (a or "").strip().lower()
+    b = (b or "").strip().lower()
+    if not a and not b:
+        return 1.0
+    if not a or not b:
+        return 0.0
+    return float(SequenceMatcher(None, a, b).ratio())
 def infer_conversation_outcomes(derived: pd.DataFrame) -> pd.Series:
     if derived.empty:
         return pd.Series(dtype="string")
@@ -361,19 +559,32 @@ def infer_conversation_outcomes(derived: pd.DataFrame) -> pd.Series:
 
     outcomes = pd.Series(["unknown"] * len(df), index=df.index, dtype="string")
     for _, g in df.groupby("_group", sort=False):
-        prompts = g["prompt"].fillna("").astype(str).str.lower().tolist()
-        for i, idx in enumerate(g.index):
-            p = prompts[i]
-            if any(k in p for k in POSITIVE_ACK_PATTERNS):
-                outcomes.loc[idx] = "success"
-            elif any(k in p for k in NEGATIVE_ACK_PATTERNS) or p in {"ok", "k", "?"}:
-                outcomes.loc[idx] = "clarification_needed"
-            elif i > 0 and p and p == prompts[i - 1]:
-                outcomes.loc[idx] = "repeat_question"
-            elif i < len(g) - 1:
-                outcomes.loc[idx] = "clarification_needed"
-            else:
+        idxs = list(g.index)
+        prompts_raw = g["prompt"].fillna("").astype(str).tolist()
+        prompts_lc = [p.lower() for p in prompts_raw]
+
+        for i, idx in enumerate(idxs):
+            if i >= len(idxs) - 1:
                 outcomes.loc[idx] = "unknown"
+                continue
+
+            nxt = prompts_lc[i + 1]
+            if any(k in nxt for k in POSITIVE_ACK_PATTERNS):
+                outcomes.loc[idx] = "success"
+                continue
+            if any(k in nxt for k in NEGATIVE_ACK_PATTERNS):
+                outcomes.loc[idx] = "clarification_needed"
+                continue
+            if _similarity(prompts_lc[i], nxt) >= 0.8:
+                outcomes.loc[idx] = "repeat_question"
+                continue
+
+            tokens = re.findall(r"[a-z0-9]+", nxt)
+            if 0 < len(tokens) <= 4:
+                outcomes.loc[idx] = "clarification_needed"
+                continue
+
+            outcomes.loc[idx] = "unknown"
     return outcomes.sort_index()
 
 
@@ -404,16 +615,33 @@ def compute_derived_interactions(traces: list[dict[str, Any]]) -> pd.DataFrame:
         text_flags = _text_flags(prompt, response)
         intent_primary, intent_secondary = _classify_intent(prompt)
         requires = _infer_requires(intent_primary, prompt)
-        answer_type = _answer_type(response, response_missing, output_json_ok)
+        level = str(trace.get("level") or "")
+        error_count = trace.get("errorCount")
+        answer_type = _answer_type(response, response_missing, output_json_ok, level=level, error_count=error_count)
         needs_ui, needs_reason = _needs_user_input(response, requires, struct)
         metric_fail = _metric_sanity_fail(response)
+        has_citations = bool(struct.get("citations_struct") or text_flags.get("citations_text"))
         completion_state, struct_good_trend, struct_good_lookup, struct_fail_reason = _completion_state(
-            intent_primary, answer_type, needs_ui, struct, requires
+            intent_primary,
+            answer_type,
+            needs_ui,
+            struct,
+            requires,
+            bool(metric_fail),
+            has_citations,
         )
         dataset_name = struct.get("dataset_name", "")
         dataset_family = _classify_dataset_family(dataset_name)
         time_window_days = _parse_time_window_days(struct.get("time_start", ""), struct.get("time_end", ""))
         codeact = _extract_codeact(output_obj)
+
+        raw_data = _find_first_key(output_obj, ("raw_data", "rawData"))
+        charts_data = _find_first_key(output_obj, ("charts_data", "chartsData"))
+        has_raw_data = isinstance(raw_data, list) and len(raw_data) > 0
+        raw_data_len = len(raw_data) if isinstance(raw_data, list) else 0
+        has_charts_data = isinstance(charts_data, list) and len(charts_data) > 0
+        charts_count = len(charts_data) if isinstance(charts_data, list) else 0
+        analysis_executed = bool(has_raw_data or has_charts_data)
 
         metadata = trace.get("metadata") if isinstance(trace.get("metadata"), dict) else {}
         ts = parse_trace_dt(trace)
@@ -426,7 +654,8 @@ def compute_derived_interactions(traces: list[dict[str, Any]]) -> pd.DataFrame:
                 "sessionId": str(trace.get("sessionId") or ""),
                 "thread_id": str(metadata.get("thread_id") or metadata.get("threadId") or ""),
                 "userId": str(trace.get("userId") or ""),
-                "level": str(trace.get("level") or ""),
+                "level": level,
+                "errorCount": error_count,
                 "latency": trace.get("latency"),
                 "input_tokens": trace.get("inputTokens"),
                 "output_tokens": trace.get("outputTokens"),
@@ -440,11 +669,28 @@ def compute_derived_interactions(traces: list[dict[str, Any]]) -> pd.DataFrame:
                 "complexity_bucket": "simple" if len(prompt.split()) < 12 else "complex",
                 "geo_scope": "regional" if any(k in prompt.lower() for k in ["country", "region", "state", "city", "brazil"]) else "unspecified",
                 **requires,
-                **{k: struct[k] for k in ["aoi_selected_struct", "aoi_candidates_struct", "time_range_struct", "dataset_struct", "citations_struct"]},
+                **{
+                    k: struct.get(k)
+                    for k in [
+                        "aoi_selected_struct",
+                        "aoi_candidates_struct",
+                        "aoi_options_count",
+                        "aoi_options_unique_count",
+                        "time_range_struct",
+                        "dataset_struct",
+                        "citations_struct",
+                        "dataset_has_citation",
+                    ]
+                },
                 **text_flags,
                 "dataset_name": dataset_name,
                 "dataset_family": dataset_family,
                 "dataset_identifiable": bool(dataset_name),
+                "analysis_executed": analysis_executed,
+                "has_raw_data": has_raw_data,
+                "raw_data_len": raw_data_len,
+                "has_charts_data": has_charts_data,
+                "charts_count": charts_count,
                 "aoi_type": struct.get("aoi_type", ""),
                 "aoi_name": struct.get("aoi_name", ""),
                 "time_start": struct.get("time_start", ""),
@@ -452,6 +698,7 @@ def compute_derived_interactions(traces: list[dict[str, Any]]) -> pd.DataFrame:
                 "time_window_days": time_window_days,
                 "answer_type": answer_type,
                 "metric_sanity_fail": bool(metric_fail),
+                "has_citations": bool(has_citations),
                 "needs_user_input": bool(needs_ui),
                 "needs_user_input_reason": needs_reason,
                 "completion_state": completion_state,
