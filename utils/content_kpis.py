@@ -17,7 +17,7 @@ from utils.trace_parsing import (
     parse_trace_dt,
     slice_output_to_current_turn,
 )
-from utils.codeact_utils import iter_decoded_codeact_parts
+from utils.codeact_utils import find_codeact_parts, iter_decoded_codeact_parts
 
 SCORED_INTENTS = {"trend_over_time", "data_lookup"}
 POSITIVE_ACK_PATTERNS = [
@@ -126,8 +126,10 @@ def _extract_struct_flags(output_obj: dict[str, Any] | None) -> dict[str, Any]:
 
     aoi_candidates = bool(aoi_options_unique_count > 1)
 
-    time_start = _find_first_key(output_obj, ("time_start", "start", "start_date", "from"))
-    time_end = _find_first_key(output_obj, ("time_end", "end", "end_date", "to"))
+    # Time keys are explicitly named in GNW outputs. Avoid generic keys like "to" which
+    # may appear in unrelated nested structures (e.g., raw_data payloads).
+    time_start = _find_first_key(output_obj, ("start_date", "startDate", "time_start", "timeStart"))
+    time_end = _find_first_key(output_obj, ("end_date", "endDate", "time_end", "timeEnd"))
     time_range_struct = bool(time_start and time_end)
 
     dataset_name = _extract_dataset_name(output_obj)
@@ -157,7 +159,8 @@ def _extract_struct_flags(output_obj: dict[str, Any] | None) -> dict[str, Any]:
     aoi_type = ""
     if isinstance(aoi, dict):
         aoi_name = str(aoi.get("name") or aoi.get("title") or "").strip()
-        aoi_type = str(aoi.get("type") or "").strip()
+        # GNW AOI objects typically carry subtype/source rather than a generic "type".
+        aoi_type = str(aoi.get("subtype") or aoi.get("type") or aoi.get("source") or "").strip()
 
     return {
         "aoi_selected_struct": aoi_selected,
@@ -243,21 +246,344 @@ def _text_flags(prompt: str, response: str) -> dict[str, bool]:
     r = (response or "").lower()
     combined = f"{p}\n{r}"
     return {
-        "aoi_text": any(k in combined for k in ["aoi", "region", "country", "city", "brazil", "india"]),
-        "time_text": any(k in combined for k in ["year", "month", "time", "from", "to", "between", "trend"]),
-        "dataset_text": any(k in combined for k in ["dataset", "layer", "collection", "tree cover", "population"]),
-        "citations_text": any(k in combined for k in ["source", "citation", "http://", "https://"]),
+        "aoi_text": any(
+            k in combined
+            for k in [
+                "aoi",
+                "area",
+                "location",
+                "region",
+                "country",
+                "state",
+                "province",
+                "district",
+                "city",
+                # ES/PT (best-effort)
+                "ubicación",
+                "ubicacion",
+                "región",
+                "region",
+                "país",
+                "pais",
+                "estado",
+                "provincia",
+                "município",
+                "municipio",
+            ]
+        ),
+        # Avoid the bare token "to" which appears in many generic phrases ("would you like to...")
+        "time_text": bool(
+            re.search(r"\b(19|20)\d{2}\b", combined)
+            or any(
+                k in combined
+                for k in [
+                    "year",
+                    "month",
+                    "time",
+                    "time range",
+                    "date range",
+                    "between",
+                    "since",
+                    "from",
+                    "over time",
+                    "trend",
+                    # ES/PT/ID (best-effort)
+                    "entre",
+                    "desde",
+                    "a partir",
+                    "últimos",
+                    "ultimos",
+                    "anos",
+                    "años",
+                    "anos",
+                    "sejak",
+                    "selama",
+                ]
+            )
+        ),
+        "dataset_text": any(
+            k in combined
+            for k in [
+                "dataset",
+                "data set",
+                "layer",
+                "collection",
+                "tree cover",
+                "land cover",
+                "alerts",
+                "mangrove",
+                "peatland",
+                "grassland",
+                # ES/PT (best-effort)
+                "capa",
+                "camada",
+                "conjunto de datos",
+            ]
+        ),
+        "citations_text": any(k in combined for k in ["source", "sources", "citation", "doi", "http://", "https://"]),
     }
 
 
+# --- Intent helpers ---------------------------------------------------------
+
+_YEAR_RE = re.compile(r"\b(19|20)\d{2}\b")
+
+
+def _looks_like_parameter_refinement(prompt: str) -> bool:
+    """Heuristic for short follow-up turns.
+
+    Examples:
+    - "Cambodia"
+    - "entre 2020 y 2024"
+    - "2021"
+
+    We keep this intentionally broad but exclude common question starts.
+    """
+
+    t = (prompt or "").strip()
+    if not t:
+        return False
+
+    low = t.lower()
+
+    # Pure year or ISO date / year range
+    if re.fullmatch(r"(19|20)\d{2}", low):
+        return True
+    if re.fullmatch(r"(19|20)\d{2}[-/](19|20)\d{2}", low):
+        return True
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", low):
+        return True
+
+    # Short time-range phrases
+    if _YEAR_RE.search(low) and len(low.split()) <= 6 and any(
+        k in low
+        for k in [
+            "between",
+            "since",
+            "from",
+            "over",
+            "past",
+            "last",
+            "entre",
+            "desde",
+            "a partir",
+            "últim",
+            "ultim",
+            "anos",
+            "años",
+            "até",
+            "hasta",
+            "sejak",
+            "selama",
+        ]
+    ):
+        return True
+
+    # Very short location/entity responses
+    tokens = re.findall(r"[\w']+", low)
+    if len(tokens) <= 3 and "?" not in low and not re.search(
+        r"\b(what|where|when|why|which|how|cu[aá]l|d[oó]nde|qu[eé]|c[oó]mo|apa|mengapa|berapa)\b",
+        low,
+    ):
+        return True
+
+    return False
+
+
+def _looks_like_conceptual_or_capability(prompt: str) -> bool:
+    """Detect capability/explanatory/metadata questions.
+
+    These should generally *not* be scored as data_lookup/trend_over_time.
+    """
+
+    t = (prompt or "").strip()
+    if not t:
+        return False
+    p = t.lower()
+
+    # Capability/product questions
+    if re.search(
+        r"\b(what can you do|what do you do|capabilit(?:y|ies)|limitations?|supported|help me with|how does (?:this|it) work)\b",
+        p,
+    ):
+        return True
+
+    # Data provenance / metadata questions
+    if re.search(
+        r"\b(where does .* data come from|data sources?|sources? of (?:the )?data|fuentes? de datos|de d[oó]nde vienen los datos|origem dos dados|sumber data)\b",
+        p,
+    ):
+        return True
+
+    # Definitional "what is" without an obvious AOI/time anchoring
+    if re.match(r"^(what is|what are|define|definition of|qu[eé] es|o que [eé]|apa itu)\b", p):
+        if not re.search(r"\b(in|en|em|within|near|around|between|since|from|entre|desde)\b", p) and not _YEAR_RE.search(p):
+            return True
+
+    return False
+
+
+def _looks_like_trend_request(p_lower: str) -> bool:
+    p = p_lower
+    if not p:
+        return False
+
+    # Explicit year range
+    if re.search(r"\b(19|20)\d{2}\s*(?:-|–|—|to|a|hasta|até)\s*(19|20)\d{2}\b", p):
+        return True
+
+    # English
+    if any(
+        k in p
+        for k in [
+            "over time",
+            "trend",
+            "time series",
+            "year by year",
+            "month by month",
+            "yearly",
+            "annual",
+            "annually",
+            "monthly",
+            "changes over",
+            "change over",
+            "evolution",
+            "increase",
+            "decrease",
+            "between",
+            "since",
+            "over the last",
+            "over the past",
+            "last ",
+            "past ",
+        ]
+    ) and (_YEAR_RE.search(p) or re.search(r"\b(between|since|from|over|last|past)\b", p)):
+        return True
+
+    # Spanish / Portuguese / Indonesian (minimal coverage)
+    if any(
+        k in p
+        for k in [
+            "tendencia",
+            "a lo largo del tiempo",
+            "a trav",
+            "cambio",
+            "cambios",
+            "evoluci",
+            "entre",
+            "desde",
+            "últim",
+            "ultim",
+            "ao longo do tempo",
+            "tendência",
+            "mudan",
+            "evoluç",
+            "sejak",
+            "selama",
+            "perubahan",
+            "tren",
+        ]
+    ) and (_YEAR_RE.search(p) or re.search(r"\b(entre|desde|sejak|selama|últim|ultim)\b", p)):
+        return True
+
+    return False
+
+
+def _looks_like_data_lookup_request(p_lower: str) -> bool:
+    p = p_lower
+    if not p:
+        return False
+
+    # Direct lookup verbs / question forms
+    if any(
+        k in p
+        for k in [
+            "show",
+            "map",
+            "display",
+            "give me",
+            "find",
+            "lookup",
+            "calculate",
+            "estimate",
+            "how much",
+            "how many",
+            "cuánto",
+            "cuanta",
+            "cuantos",
+            "cuantas",
+            "muestra",
+            "muéstrame",
+            "mostrar",
+            "dame",
+            "tunjukkan",
+            "berapa",
+        ]
+    ):
+        return True
+
+    # Domain keywords (keep this short; we just want to avoid falling into "other")
+    if any(
+        k in p
+        for k in [
+            "land cover",
+            "land use",
+            "uso del suelo",
+            "uso de suelo",
+            "cobertura",
+            "tree cover",
+            "forest loss",
+            "deforestation",
+            "deforestación",
+            "alerts",
+            "alertas",
+            "mangrove",
+            "manglar",
+            "manguezal",
+            "peatland",
+            "turbera",
+            "grassland",
+            "pastizal",
+            "hectare",
+            "hectares",
+            " ha ",
+        ]
+    ):
+        return True
+
+    # Generic question words
+    if "?" in p and re.search(
+        r"\b(what|where|when|which|how|cu[aá]nt|d[oó]nde|cu[aá]l|qu[eé]|c[oó]mo|apa|di mana|berapa)\b",
+        p,
+    ):
+        return True
+
+    return False
+
+
 def _classify_intent(prompt: str) -> tuple[str, str]:
-    p = (prompt or "").lower()
-    if any(k in p for k in ["trend", "over time", "change over", "yearly", "monthly"]):
-        return "trend_over_time", ""
-    if any(k in p for k in ["show", "lookup", "find", "what is", "tree cover", "dataset"]):
-        return "data_lookup", ""
-    if any(k in p for k in ["how", "can you", "capability", "what can you do"]):
+    raw = (prompt or "").strip()
+    p = raw.lower()
+
+    # --- Parameter refinement / follow-up turns ---
+    # Many multi-turn interactions contain a short user follow-up like "Cambodia" or
+    # "entre 2020 y 2024". These are not primary intents on their own, but we still
+    # want deterministic handling downstream.
+    if _looks_like_parameter_refinement(raw):
+        return "parameter_refinement", ""
+
+    # --- Conceptual / capability / metadata questions ---
+    if _looks_like_conceptual_or_capability(raw):
         return "conceptual_or_capability", ""
+
+    # --- Trend over time ---
+    if _looks_like_trend_request(p):
+        return "trend_over_time", ""
+
+    # --- Data lookup (default for most analytical queries) ---
+    if _looks_like_data_lookup_request(p):
+        return "data_lookup", ""
+
     return "other", ""
 
 
@@ -270,7 +596,7 @@ def _infer_requires(intent: str, prompt: str) -> dict[str, bool]:
     raw = prompt or ""
     p = raw.lower()
 
-    if intent == "conceptual_or_capability":
+    if intent in {"conceptual_or_capability", "parameter_refinement"}:
         return {
             "requires_data": False,
             "requires_aoi": False,
@@ -286,13 +612,19 @@ def _infer_requires(intent: str, prompt: str) -> dict[str, bool]:
         )
     )
 
+    # Place detection: keep it lightweight, but cover the multilingual
+    # prompts present in GNW exports.
     place_tokens = [
-        "aoi", "location", "place", "region", "country", "state", "province", "district", "county", "city", "municipality",
+        "aoi", "location", "place", "area", "region", "country", "state", "province", "district", "county", "city", "municipality",
+        "país", "pais", "estado", "provincia", "província", "distrito", "región", "region", "ciudad", "municipio", "ubicación", "ubicacion", "lugar", "zona",
+        "negara", "provinsi", "kota", "kabupaten", "wilayah", "lokasi", "daerah",
     ]
-    mentions_place = bool(re.search(r"\b(in|within|near|around|across)\b", p)) or any(t in p for t in place_tokens)
-    mentions_place = mentions_place or bool(
-        re.search(r"\bfor\s+(?!me\b|us\b|you\b|my\b|our\b|this\b|that\b)[A-Z][\w\-]+", raw)
-    )
+    mentions_place = bool(
+        re.search(
+            r"\b(in|within|near|around|across|en|dentro|cerca|alrededor|em|perto|pr[oó]ximo|di|dalam|sekitar)\b",
+            p,
+        )
+    ) or any(t in p for t in place_tokens)
 
     if intent == "trend_over_time":
         requires_aoi = not global_scope
@@ -304,12 +636,26 @@ def _infer_requires(intent: str, prompt: str) -> dict[str, bool]:
     requires_time = bool(
         intent == "trend_over_time"
         or re.search(r"\b(19\d{2}|20\d{2})\b", p)
-        or any(k in p for k in ["over time", "between", "since", "from", "to", "year", "annual", "monthly"])
+        or any(
+            k in p
+            for k in [
+                "over time", "trend", "between", "since", "from", "during", "last", "past", "decade",
+                "entre", "desde", "a partir", "durante", "últim", "ultim", "año", "años", "ano", "anos", "década", "decada",
+                "ao longo", "tendência", "tendencia", "mudança", "mudanca", "mensal", "mensual", "anual",
+                "sejak", "selama", "antara", "tahun", "bulanan", "tahunan",
+            ]
+        )
     )
 
     requires_dataset = bool(
         requires_data
-        or any(k in p for k in ["dataset", "layer", "tree cover", "grassland", "alert", "carbon", "emission"])
+        or any(
+            k in p
+            for k in [
+                "dataset", "data set", "layer", "capa", "camada", "conjunto de datos", "conjunto de dados",
+                "tree cover", "land cover", "grassland", "mangrove", "peat", "alert", "carbon", "emission",
+            ]
+        )
     )
     return {
         "requires_data": requires_data,
@@ -353,49 +699,108 @@ def _answer_type(
 
 
 def _needs_user_input(response: str, requires: dict[str, bool], struct: dict[str, Any]) -> tuple[bool, str]:
-    r = (response or "").lower()
+    r = (response or "").strip()
+    rl = r.lower()
+
     missing: list[str] = []
-    if requires["requires_aoi"] and not struct["aoi_selected_struct"]:
+    if requires.get("requires_aoi") and not struct.get("aoi_selected_struct"):
         missing.append("aoi")
-    if requires["requires_time_range"] and not struct["time_range_struct"]:
+    if requires.get("requires_time_range") and not struct.get("time_range_struct"):
         missing.append("time")
-    if requires["requires_dataset"] and not struct["dataset_struct"]:
+    if requires.get("requires_dataset") and not struct.get("dataset_struct"):
         missing.append("dataset")
     if not missing:
         return False, ""
 
-    ask_verbs = re.compile(r"\b(please|pls|could you|can you|would you|need you to|select|choose|pick|specify|provide|clarify|confirm)\b", re.I)
-    aoi_terms = re.compile(r"\b(aoi|area|location|place|region|country|state|province|district|county|city|municipality)\b", re.I)
-    time_terms = re.compile(r"\b(time range|date range|timeframe|period|start date|end date|year|month|between|from\b|to\b)\b", re.I)
-    dataset_terms = re.compile(r"\b(dataset|layer|collection)\b", re.I)
-    disambig = re.compile(r"\b(multiple|several|more than one|two|2|three|3)\b.{0,80}\b(option|match|result|location|place)\b", re.I)
+    # Tight clarification detection. Avoid broad triggers like a bare "?" or common
+    # stop-words such as "to" (which appear in many polite follow-ups).
+    ask_verbs = re.compile(
+        r"\b(please|pls|could you|can you|need(?: you)?(?: to)?|i need|we need|select|choose|pick|specify|provide|clarify|confirm|which|por favor|podr[ií]as|puede(?:s)?|indica|especifica|aclara|confirma|selecciona|elige|pode(?:ria)?|voce|você|informe|selecione|escolha|preciso|tolong|mohon|bisa(?:kah)?|pilih|tentukan|perlu)\b",
+        re.I,
+    )
+    aoi_terms = re.compile(
+        r"\b(aoi|area|location(?:s)?|place(?:s)?|region(?:s)?|country|state|province|district|county|city|municipality|village|site|pa[ií]s|pais|estado|prov[ií]ncia|provincia|distrito|regi[oó]n|ciudad|municipio|ubicaci[oó]n|lugar|zona|negara|provinsi|kota|kabupaten|wilayah|lokasi|daerah)\b",
+        re.I,
+    )
+    time_terms = re.compile(
+        r"\b(time range|date range|timeframe|period|start date|end date|start|end|year(?:s)?|month(?:s)?|between|from|since|during|a[nñ]o(?:s)?|ano(?:s)?|mensual|anual|entre|desde|sejak|selama|antara|tahun(?:\b|\b.*))",
+        re.I,
+    )
+    dataset_terms = re.compile(r"\b(dataset|data set|layer|collection|capa|camada|conjunto de datos)\b", re.I)
+
+    # Location/dataset disambiguation language (plural-safe).
+    disambig = re.compile(
+        r"\b(multiple|several|more than one|two|2|three|3)\b.{0,120}\b(option(?:s)?|match(?:es)?|result(?:s)?|location(?:s)?|place(?:s)?)\b",
+        re.I,
+    )
+    did_you_mean = re.compile(r"\b(did you mean|do you mean|quisiste decir|quiere decir|voc[eê] quis dizer)\b", re.I)
+    follow_up_offer = re.compile(r"\b(would you like|do you want (?:me )?to|shall i)\b", re.I)
 
     asked: list[str] = []
     if "aoi" in missing:
-        if int(struct.get("aoi_options_unique_count") or 0) > 1 or struct.get("aoi_candidates_struct"):
+        if int(struct.get("aoi_options_unique_count") or 0) > 1 or bool(struct.get("aoi_candidates_struct")):
             asked.append("aoi")
-        elif disambig.search(r):
+        elif disambig.search(rl) or did_you_mean.search(rl):
             asked.append("aoi")
-        elif ask_verbs.search(r) and aoi_terms.search(r):
+        elif ask_verbs.search(rl) and aoi_terms.search(rl):
             asked.append("aoi")
-    if "time" in missing and ask_verbs.search(r) and time_terms.search(r):
+
+    if "time" in missing and ask_verbs.search(rl) and time_terms.search(rl):
         asked.append("time")
-    if "dataset" in missing and ask_verbs.search(r) and dataset_terms.search(r):
+
+    if "dataset" in missing and ask_verbs.search(rl) and dataset_terms.search(rl):
         asked.append("dataset")
 
-    if not asked:
-        return False, ""
-    if len(set(asked)) > 1:
-        return True, "multiple_missing"
-    only = asked[0]
-    return True, f"missing_{only}"
+    if asked:
+        if len(set(asked)) > 1:
+            return True, "multiple_missing"
+        return True, f"missing_{asked[0]}"
+
+    # Generic clarification asks without an explicit field term.
+    generic_clarify = bool(
+        re.search(r"\b(clarify|clarification|more information|more info|additional info|need more details|provide more details)\b", rl)
+        or re.search(r"\b(aclara|aclaraci[oó]n|m[aá]s informaci[oó]n|detalles adicionales)\b", rl)
+        or re.search(r"\b(esclare(?:a|cer)|mais informa[cç][aã]o|detalhes adicionais)\b", rl)
+    )
+    if generic_clarify and not follow_up_offer.search(rl):
+        if len(missing) > 1:
+            return True, "multiple_missing"
+        return True, f"missing_{missing[0]}"
+
+    return False, ""
 
 
 def _metric_sanity_fail(response: str) -> bool:
-    r = (response or "").lower()
-    has_pct = bool(re.search(r"\b\d+(?:\.\d+)?%", r))
-    impossible_pct = bool(re.search(r"\b(1\d{2,}|\d{4,})%", r))
-    return has_pct and impossible_pct
+    """Flag obviously broken percentage outputs.
+
+    This is intentionally conservative: it should *not* fire on phrases like
+    "I'm 100% sure". It focuses on numerically implausible percentages and
+    share/portion contexts that exceed 100%.
+    """
+    text = response or ""
+    if not text:
+        return False
+
+    lower = text.lower()
+    pct_re = re.compile(r"(-?\d+(?:\.\d+)?)\s*%")
+    share_ctx = re.compile(r"\b(share|percentage|percent of|portion|proportion|of total)\b", re.I)
+
+    for m in pct_re.finditer(text):
+        try:
+            val = float(m.group(1))
+        except Exception:
+            continue
+
+        # Hard bounds: clearly broken.
+        if val < -200 or val > 2000:
+            return True
+
+        # Softer bounds if the local context indicates a share/portion.
+        ctx = lower[max(0, m.start() - 50) : m.start()]
+        if share_ctx.search(ctx) and (val < 0 or val > 100):
+            return True
+
+    return False
 
 
 def _classify_dataset_family(dataset_name: str) -> str:
@@ -442,8 +847,9 @@ def _parse_time_window_days(start: str, end: str) -> float | None:
 
 
 def _extract_codeact(output_obj: Any) -> dict[str, Any]:
-    parts = _find_first_key(output_obj, ("codeact_parts", "codeActParts", "parts"))
-    if not isinstance(parts, list):
+    # Use canonical CodeAct discovery to avoid mismatches between nested output shapes.
+    parts = find_codeact_parts(output_obj)
+    if not parts:
         return {
             "codeact_present": False,
             "codeact_parts_count": 0,
@@ -453,13 +859,17 @@ def _extract_codeact(output_obj: Any) -> dict[str, Any]:
             "codeact_decoded_chars_total": 0,
         }
 
+    decoded_parts = list(iter_decoded_codeact_parts(output_obj))
+    # Fallback to raw parts count if decoding yields nothing.
+    parts_count = len(decoded_parts) or len(parts)
+
     code_blocks = 0
     exec_outputs = 0
     uses_analytics_api = False
     decoded_chars_total = 0
     analytics_host_re = re.compile(r"\banalytics\.globalnaturewatch\.org\b", re.IGNORECASE)
 
-    for part in iter_decoded_codeact_parts(parts):
+    for part in decoded_parts:
         ptype = str(part.get("type") or "").lower().strip()
         decoded = str(part.get("decoded") or "")
 
@@ -474,12 +884,33 @@ def _extract_codeact(output_obj: Any) -> dict[str, Any]:
 
     return {
         "codeact_present": True,
-        "codeact_parts_count": len(parts),
+        "codeact_parts_count": parts_count,
         "codeact_code_blocks_count": code_blocks,
         "codeact_exec_outputs_count": exec_outputs,
         "codeact_uses_analytics_api": uses_analytics_api,
         "codeact_decoded_chars_total": decoded_chars_total,
     }
+
+
+def _count_raw_data_records(raw_data: Any) -> int:
+    """Best-effort count of raw records.
+
+    In current GNW outputs, `raw_data` is commonly a dict keyed by query/run IDs
+    with nested dicts keyed by row index. Counting list/dict lengths at one level
+    provides a stable proxy for record volume.
+    """
+
+    if isinstance(raw_data, list):
+        return len(raw_data)
+    if isinstance(raw_data, dict):
+        total = 0
+        for v in raw_data.values():
+            if isinstance(v, list):
+                total += len(v)
+            elif isinstance(v, dict):
+                total += len(v)
+        return total if total > 0 else len(raw_data)
+    return 0
 
 
 def _completion_state(
@@ -514,10 +945,10 @@ def _completion_state(
 
     if answer_type in {"missing_output", "model_error", "empty_or_short"}:
         state = "error"
-    elif answer_type == "no_data":
-        state = "no_data"
     elif needs_user_input:
         state = "needs_user_input"
+    elif answer_type == "no_data":
+        state = "no_data"
     elif intent in SCORED_INTENTS and reasons:
         state = "incomplete_answer"
     elif answer_type in {"answer", "text_only"}:
@@ -612,12 +1043,72 @@ def compute_derived_interactions(traces: list[dict[str, Any]]) -> pd.DataFrame:
         output_obj = trace.get("output") if isinstance(trace.get("output"), dict) else {}
 
         struct = _extract_struct_flags(output_obj)
+
+        # --- Analysis payload (raw/charts) ---------------------------------
+        raw_data = _find_first_key(output_obj, ("raw_data", "rawData"))
+        raw_data_len = _count_raw_data_records(raw_data)
+        has_raw_data = raw_data_len > 0
+
+        charts_data = _find_first_key(output_obj, ("charts_data", "chartsData", "charts"))
+        has_charts_data = isinstance(charts_data, list) and len(charts_data) > 0
+        charts_count = len(charts_data) if isinstance(charts_data, list) else 0
+
+        analysis_executed = bool(has_raw_data or has_charts_data)
+
+        # --- Time window ----------------------------------------------------
+        # (Used both for QA and for intent rescue.)
+        time_window_days = _parse_time_window_days(
+            str(struct.get("time_start") or ""),
+            str(struct.get("time_end") or ""),
+        )
+
         text_flags = _text_flags(prompt, response)
+
         intent_primary, intent_secondary = _classify_intent(prompt)
+
+        # If a prompt is short/ambiguous (common in threaded clarifications) but the
+        # system clearly executed an analysis and returned a structured dataset, treat
+        # it as a scored data interaction.
+        if (
+            intent_primary in {"other", "parameter_refinement"}
+            and analysis_executed
+            and bool(struct.get("dataset_struct"))
+        ):
+            p_low = (prompt or "").lower()
+            is_long_time_window = pd.notna(time_window_days) and float(time_window_days) > 366.0
+            if _looks_like_trend_request(p_low) or (bool(struct.get("time_range_struct")) and is_long_time_window):
+                intent_primary = "trend_over_time"
+            else:
+                intent_primary = "data_lookup"
+
         requires = _infer_requires(intent_primary, prompt)
         level = str(trace.get("level") or "")
         error_count = trace.get("errorCount")
+
+        response_lower = (response or "").lower()
+        mentions_no_data_language = any(
+            m in response_lower
+            for m in [
+                "no data available",
+                "data is not available",
+                "not available for",
+                "couldn't find data",
+                "could not find data",
+                "unable to find",
+                "no results found",
+                "no matching data",
+                "does not exist in the dataset",
+            ]
+        )
+
         answer_type = _answer_type(response, response_missing, output_json_ok, level=level, error_count=error_count)
+
+        # If the agent still executed analysis and returned structured output, "no_data"
+        # is misleading. Keep the language as a separate flag for QA filtering.
+        no_data_with_analysis = False
+        if answer_type == "no_data" and analysis_executed:
+            no_data_with_analysis = True
+            answer_type = "answer"
         needs_ui, needs_reason = _needs_user_input(response, requires, struct)
         metric_fail = _metric_sanity_fail(response)
         has_citations = bool(struct.get("citations_struct") or text_flags.get("citations_text"))
@@ -632,16 +1123,7 @@ def compute_derived_interactions(traces: list[dict[str, Any]]) -> pd.DataFrame:
         )
         dataset_name = struct.get("dataset_name", "")
         dataset_family = _classify_dataset_family(dataset_name)
-        time_window_days = _parse_time_window_days(struct.get("time_start", ""), struct.get("time_end", ""))
         codeact = _extract_codeact(output_obj)
-
-        raw_data = _find_first_key(output_obj, ("raw_data", "rawData"))
-        charts_data = _find_first_key(output_obj, ("charts_data", "chartsData"))
-        has_raw_data = isinstance(raw_data, list) and len(raw_data) > 0
-        raw_data_len = len(raw_data) if isinstance(raw_data, list) else 0
-        has_charts_data = isinstance(charts_data, list) and len(charts_data) > 0
-        charts_count = len(charts_data) if isinstance(charts_data, list) else 0
-        analysis_executed = bool(has_raw_data or has_charts_data)
 
         metadata = trace.get("metadata") if isinstance(trace.get("metadata"), dict) else {}
         ts = parse_trace_dt(trace)
@@ -697,6 +1179,8 @@ def compute_derived_interactions(traces: list[dict[str, Any]]) -> pd.DataFrame:
                 "time_end": struct.get("time_end", ""),
                 "time_window_days": time_window_days,
                 "answer_type": answer_type,
+                "mentions_no_data_language": bool(mentions_no_data_language),
+                "no_data_with_analysis": bool(no_data_with_analysis),
                 "metric_sanity_fail": bool(metric_fail),
                 "has_citations": bool(has_citations),
                 "needs_user_input": bool(needs_ui),
