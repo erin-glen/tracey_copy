@@ -459,5 +459,33 @@ class TestContentKPIs(unittest.TestCase):
         self.assertIn("missing_aoi", str(row["needs_user_input_reason"]))
 
 
+
+    def test_aoi_options_do_not_count_as_selected_aoi(self):
+        traces = [
+            {
+                "id": "tA",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "sessionId": "sA",
+                "userId": "uA",
+                "input": {"messages": [{"role": "user", "content": "Tree cover loss in Winchester"}]},
+                "output": {
+                    "aoi_options": [
+                        {"aoi": {"name": "Winchester, Virginia, United States", "gadm_id": "USA.47.1_1"}},
+                        {"aoi": {"name": "Winchester, Manitoba, Canada", "gadm_id": "CAN.3.4_1"}},
+                        # duplicate option should not affect unique-count logic
+                        {"aoi": {"name": "Winchester, Virginia, United States", "gadm_id": "USA.47.1_1"}},
+                    ]
+                },
+                "metadata": {"thread_id": "thA"},
+            }
+        ]
+
+        df = compute_derived_interactions(traces)
+        self.assertEqual(len(df), 1)
+        row = df.iloc[0].to_dict()
+
+        self.assertTrue(row.get("aoi_candidates_struct"))
+        # Candidate options should not be treated as a selected AOI.
+        self.assertFalse(row.get("aoi_selected_struct"))
 if __name__ == "__main__":
     unittest.main()
