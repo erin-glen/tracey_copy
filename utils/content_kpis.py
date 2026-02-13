@@ -91,13 +91,36 @@ def _find_first_key(obj: Any, keys: tuple[str, ...]) -> Any:
 
 def _extract_struct_flags(output_obj: dict[str, Any] | None) -> dict[str, Any]:
     output_obj = output_obj or {}
-    aoi = _find_first_key(output_obj, ("aoi", "selected_aoi", "selectedAOI"))
-    aoi_selected = isinstance(aoi, dict) and bool(
-        str(aoi.get("name") or "").strip()
-        or str(aoi.get("id") or "").strip()
-        or str(aoi.get("src_id") or "").strip()
-        or str(aoi.get("gadm_id") or "").strip()
-    )
+
+    # Selected AOI: prefer explicit top-level keys; avoid treating candidate AOIs (e.g. under
+    # `aoi_options`) as if they were selected.
+    aoi = None
+    if isinstance(output_obj, dict):
+        for k in ("selected_aoi", "selectedAOI", "aoi"):
+            if k in output_obj and output_obj[k] not in (None, "", []):
+                aoi = output_obj[k]
+                break
+        if aoi is None:
+            # common wrappers
+            for wrapper in ("result", "payload", "data"):
+                w = output_obj.get(wrapper)
+                if isinstance(w, dict):
+                    for k in ("selected_aoi", "selectedAOI", "aoi"):
+                        if k in w and w[k] not in (None, "", []):
+                            aoi = w[k]
+                            break
+                if aoi is not None:
+                    break
+    aoi_selected = False
+    if isinstance(aoi, dict):
+        aoi_selected = bool(
+            str(aoi.get("name") or "").strip()
+            or str(aoi.get("id") or "").strip()
+            or str(aoi.get("src_id") or "").strip()
+            or str(aoi.get("gadm_id") or "").strip()
+        )
+    elif isinstance(aoi, str):
+        aoi_selected = bool(aoi.strip())
 
     aoi_options = _find_first_key(
         output_obj, ("aoi_options", "aoiOptions", "aoi_candidates", "aoiCandidates", "candidates", "aois")
@@ -801,15 +824,18 @@ def _needs_user_input(response: str, requires: dict[str, bool], struct: dict[str
     rl = r.lower()
 
     ask_verbs = re.compile(
-        r"\b(please|pls|could you|can you|which|what|select|choose|provide|specify|tell me|clarify|confirm|"
-        r"por favor|puedes|podr[ií]a(?:s)?|cu[aá]l|qu[eé]|selecciona|elige|indica|especifica|necesito|"
-        r"pode|voc[eê] pode|voce pode|qual|selecione|escolha|informe|especifique|preciso|"
+        r"\b(please|pls|could you|can you|select|choose|provide|specify|tell me|clarify|confirm|"
+        r"por favor|puedes|podr[ií]a(?:s)?|selecciona|elige|indica|especifica|necesito|"
+        r"pode|voc[eê] pode|voce pode|selecione|escolha|informe|especifique|preciso|"
         r"tolong|mohon|bisa(?:kah)?|dapatkah|pilih|tentukan|perlu)\b"
     )
     aoi_terms = re.compile(
-        r"\b(aoi|area|location|place|region|polygon|country|state|province|district|county|municipality|"
-        r"[áa]rea|zona|ubicaci[oó]n|lugar|regi[oó]n|pa[ií]s|estado|provincia|municipio|"
-        r"local|regi[aã]o|prov[ií]ncia|munic[ií]pio|"
+        r"\b(aoi|"
+        r"area(?:s)?|location(?:s)?|place(?:s)?|region(?:s)?|polygon(?:s)?|"
+        r"countr(?:y|ies)|state(?:s)?|province(?:s)?|district(?:s)?|count(?:y|ies)|municipalit(?:y|ies)|"
+        r"[áa]rea(?:s)?|zona(?:s)?|ubicaci[oó]n(?:es)?|lugar(?:es)?|regi[oó]n(?:es)?|"
+        r"pa[ií]s(?:es)?|estado(?:s)?|provincia(?:s)?|municipio(?:s)?|"
+        r"local(?:es)?|regi[aã]o|regi[oõ]es|prov[ií]ncia(?:s)?|munic[ií]pio(?:s)?|"
         r"wilayah|daerah|lokasi|kawasan|provinsi|kabupaten|kota)\b"
     )
     time_terms = re.compile(
@@ -819,23 +845,20 @@ def _needs_user_input(response: str, requires: dict[str, bool], struct: dict[str
         r"rentang waktu|periode|tahun|tanggal|mulai|akhir)\b"
     )
     dataset_terms = re.compile(
-        r"\b(dataset|data set|layer|layers|map layer|"
-        r"conjunto de datos|capa|capas|"
-        r"conjunto de dados|camada|camadas|"
+        r"\b(dataset(?:s)?|data set(?:s)?|layer(?:s)?|map layer(?:s)?|"
+        r"conjunto de datos|capa(?:s)?|"
+        r"conjunto de dados|camada(?:s)?|"
         r"lapisan)\b"
     )
 
     # Disambiguation: multiple location matches / "did you mean" / "which one"
     disambig = re.compile(
-        r"\b(found|there (?:are|were)|i see)\b.{0,80}\b(multiple|several|two|2|three|3)\b.{0,80}\b(location|place|match|matches|options?|results?)\b"
+        r"\b(found|there (?:are|were)|i see)\b.{0,80}\b(multiple|several|two|2|three|3)\b.{0,80}\b(location(?:s)?|place(?:s)?|match(?:es)?|option(?:s)?|result(?:s)?)\b"
     )
     did_you_mean = re.compile(r"\b(did you mean|do you mean)\b")
     which_one = re.compile(r"\b(which one|which of (?:these|those)|choose one|select one)\b")
 
-    follow_up_offer = re.compile(
-        r"\b(would you like|do you want me to|want me to|should i|can i also|want a map|want a chart|want a table|"
-        r"te gustar[ií]a|quieres que|gostaria|quer que|queres que)\b"
-    )
+    q_ask = re.compile(r"\b(which|what|cu[aá]l|qu[eé]|qual)\b[^?.]{0,120}\?")
 
     # --- Structured missingness (independent of requires) -----------------
     aoi_missing_struct = not bool(struct.get("aoi_selected_struct"))
@@ -852,17 +875,17 @@ def _needs_user_input(response: str, requires: dict[str, bool], struct: dict[str
         if aoi_missing_struct or bool(struct.get("aoi_candidates_struct")) or int(struct.get("aoi_options_unique_count") or 0) > 1:
             asked_fields.append("missing_aoi")
 
-    if ask_verbs.search(rl) and aoi_terms.search(rl) and not follow_up_offer.search(rl):
+    if (ask_verbs.search(rl) or q_ask.search(rl)) and aoi_terms.search(rl):
         if aoi_missing_struct:
             asked_fields.append("missing_aoi")
 
     # Time
-    if ask_verbs.search(rl) and time_terms.search(rl) and not follow_up_offer.search(rl):
+    if (ask_verbs.search(rl) or q_ask.search(rl)) and time_terms.search(rl):
         if time_missing_struct:
             asked_fields.append("missing_time")
 
     # Dataset
-    if ask_verbs.search(rl) and dataset_terms.search(rl) and not follow_up_offer.search(rl):
+    if (ask_verbs.search(rl) or q_ask.search(rl)) and dataset_terms.search(rl):
         if dataset_missing_struct:
             asked_fields.append("missing_dataset")
 
@@ -889,7 +912,7 @@ def _needs_user_input(response: str, requires: dict[str, bool], struct: dict[str
         and re.search(r"\b(specify|provide|select|choose|clarify|especifica|indica|informe|tentukan|pilih)\b", rl)
     )
 
-    if generic_clarify and not follow_up_offer.search(rl):
+    if generic_clarify:
         reason = "multiple_missing" if len(missing) > 1 else missing[0]
         return True, reason
 
@@ -1272,9 +1295,7 @@ def compute_derived_interactions(traces: list[dict[str, Any]]) -> pd.DataFrame:
                 "response_missing": bool(response_missing),
                 "output_json_ok": bool(output_json_ok),
                 "intent_primary": intent_primary,
-                "intent_secondary": intent_secondary,
                 "complexity_bucket": "simple" if len(prompt.split()) < 12 else "complex",
-                "geo_scope": "regional" if any(k in prompt.lower() for k in ["country", "region", "state", "city", "brazil"]) else "unspecified",
                 **requires,
                 **{
                     k: struct.get(k)
@@ -1314,7 +1335,6 @@ def compute_derived_interactions(traces: list[dict[str, Any]]) -> pd.DataFrame:
                 "struct_good_trend": bool(struct_good_trend),
                 "struct_good_lookup": bool(struct_good_lookup),
                 "struct_fail_reason": struct_fail_reason,
-                "conversation_outcome": "unknown",
                 **codeact,
             }
         )
@@ -1322,7 +1342,6 @@ def compute_derived_interactions(traces: list[dict[str, Any]]) -> pd.DataFrame:
     derived = pd.DataFrame(rows)
     if derived.empty:
         return derived
-    derived["conversation_outcome"] = infer_conversation_outcomes(derived)
     return derived
 
 
