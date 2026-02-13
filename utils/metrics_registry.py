@@ -237,14 +237,33 @@ METRICS: dict[str, dict[str, Any]] = {
         ],
         "used_in": ["Content KPIs"],
     },
-    "global_citation_rate": {
-        "name": "Citation rate",
-        "category": "Content KPIs · Deterministic",
-        "definition": "Share of turns where citations are present either in structured output or in plain text.",
-        "formula": "`mean(citations_struct OR citations_text)`",
-        "provenance": "Derived via structural keys (`citations`, `sources`, `references`, etc.) plus URL/text heuristics.",
+    "citations_shown_rate_scored_intents": {
+        "name": "Citations shown (scored)",
+        "category": "Content KPIs · Global",
+        "definition": (
+            "Share of scored data interactions where the assistant included a user-visible citation in its response "
+            "(e.g., URL/DOI or an explicit 'Source:' reference)."
+        ),
+        "formula": "citations_shown_rate_scored_intents = mean(citations_text == True) over scored intents",
+        "provenance": "Derived from assistant response text; does not rely on structured tool metadata.",
         "caveats": [
-            "This detects presence, not quality, relevance, or correctness of citations.",
+            "Heuristic detection — can miss citations that are not URL/DOI/'Source:' style.",
+            "Not meaningful for non-data intents; computed on scored intents only.",
+        ],
+        "used_in": ["Content KPIs"],
+    },
+    "citation_metadata_present_rate_scored_intents": {
+        "name": "Citation metadata present (scored)",
+        "category": "Content KPIs · Global",
+        "definition": (
+            "Share of scored data interactions where the tool output included structured citation metadata "
+            "(e.g., dataset citation fields), regardless of whether it was rendered in the assistant's text."
+        ),
+        "formula": "citation_metadata_present_rate_scored_intents = mean(citations_struct OR dataset_has_citation) over scored intents",
+        "provenance": "Derived from structured tool output fields (e.g., dataset citation metadata).",
+        "caveats": [
+            "High values do not guarantee the citation was shown to the user in the response text.",
+            "Not meaningful for non-data intents; computed on scored intents only.",
         ],
         "used_in": ["Content KPIs"],
     },
@@ -548,7 +567,8 @@ PAGES: dict[str, dict[str, Any]] = {
             "needs_user_input_rate_scored_intents",
             "error_rate_scored_intents",
             "global_dataset_identifiable_rate_scored_intents",
-            "global_citation_rate",
+            "citations_shown_rate_scored_intents",
+            "citation_metadata_present_rate_scored_intents",
             "threads_ended_after_needs_user_input_rate",
         ],
         "pitfalls": [

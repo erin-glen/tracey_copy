@@ -99,7 +99,7 @@ def render(
         ("Complete (scored)", "complete_answer_rate_scored_intents"),
         ("Needs input (scored)", "needs_user_input_rate_scored_intents"),
         ("Errors (scored)", "error_rate_scored_intents"),
-        ("Citation rate", "global_citation_rate"),
+        ("Citations shown (scored)", "citations_shown_rate_scored_intents"),
     ]
     for col, (label, key) in zip(cols, primary_metric_keys):
         with col:
@@ -111,11 +111,12 @@ def render(
             )
 
     with st.expander("Additional KPIs", expanded=False):
-        a1, a2 = st.columns(2)
+        a1, a2, a3 = st.columns(3)
         for col, (label, key) in zip(
-            [a1, a2],
+            [a1, a2, a3],
             [
                 ("Dataset identifiable (scored)", "global_dataset_identifiable_rate_scored_intents"),
+                ("Citation metadata present (scored)", "citation_metadata_present_rate_scored_intents"),
                 ("Threads ending in needs-input", "threads_ended_after_needs_user_input_rate"),
             ],
         ):
