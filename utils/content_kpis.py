@@ -369,6 +369,34 @@ def _looks_like_parameter_refinement(prompt: str) -> bool:
 
     low = t.lower()
 
+    # Greetings / language-selection messages are not parameter refinements.
+    if re.fullmatch(
+        r"(hi|hello|hey|hola|halo|hallo|bonjour|salut|ciao|ola|olá|namaste|good (morning|afternoon|evening)|buenos d[ií]as|buenas (tardes|noches)|selamat (pagi|siang|sore|malam))[\s!?.]*",
+        low,
+    ):
+        return False
+
+    if low.strip(" !?.") in {
+        "english",
+        "spanish",
+        "español",
+        "espanol",
+        "portuguese",
+        "português",
+        "bahasa",
+        "bahasa indonesia",
+        "indonesian",
+        "français",
+        "french",
+        "deutsch",
+        "german",
+    }:
+        return False
+
+    # If it looks like a fresh data request (not a follow-up value), don't treat it as a refinement.
+    if _looks_like_trend_request(t) or _looks_like_data_lookup_request(t):
+        return False
+
     # Pure year or ISO date / year range
     if re.fullmatch(r"(19|20)\d{2}", low):
         return True
@@ -426,7 +454,7 @@ def _looks_like_conceptual_or_capability(prompt: str) -> bool:
 
     # Capability/product questions
     if re.search(
-        r"\b(what can you do|what do you do|capabilit(?:y|ies)|limitations?|supported|help me with|how does (?:this|it) work|how (?:do|can) (?:i|we) use|how can (?:i|we) use|what is this tool)\b",
+        r"\b(what can you do|what do you do|capabilit(?:y|ies)|limitations?|supported|help me with|how does (?:this|it) work|how (?:do|can) (?:i|we) use|how can (?:i|we) use|what is this tool|what is this for|what's this for|qu[eé] puedes hacer|o que voc[eê] pode fazer|apa yang bisa (?:kamu|anda) lakukan|apa yang dapat (?:kamu|anda) lakukan)\b",
         p,
     ):
         return True
@@ -473,9 +501,28 @@ def _looks_like_conceptual_or_capability(prompt: str) -> bool:
     if re.search(r"\b(satellite images?|imagery|raw satellite)\b", p):
         return True
 
-    # Definitional "what is" without an obvious AOI/time anchoring
-    if re.match(r"^(what is|what are|define|definition of|qu[eé] es|o que [eé]|apa itu)\b", p):
-        if not re.search(r"\b(in|en|em|within|near|around|between|since|from|entre|desde)\b", p) and not _YEAR_RE.search(p):
+    # Definitional "what is" questions without an obvious AOI/time anchoring.
+    #
+    # Heuristic: allow short definitional queries (<= 8 words) to be conceptual, but avoid
+    # misclassifying long metric prompts like "What are the deforestation emissions for Brazil...".
+    if re.match(r"^(define|definition of)\b", p):
+        return True
+
+    if re.match(r"^(what is|what are|qu[eé] es|o que [eé]|apa itu)\b", p):
+        word_count = len(re.findall(r"\b\w+\b", p))
+        has_geo_anchor = bool(re.search(r"\b(in|en|em|within|near|around|between|since|from|entre|desde)\b", p))
+        has_year = bool(_YEAR_RE.search(p))
+
+        # "for <place>" in English is extremely common in metric-style prompts.
+        has_for_anchor = False
+        if re.search(r"\bfor\s+(?:the\s+)?[A-Z]", t):
+            has_for_anchor = True
+        elif re.search(r"\bfor\s+(?:the\s+)?\w{3,}", p) and re.search(
+            r"\b(emissions?|flux|extent|area|loss|gain|change|alerts?|hectares?|km2|percent)\b", p
+        ):
+            has_for_anchor = True
+
+        if not (has_geo_anchor or has_year or has_for_anchor) and word_count <= 8:
             return True
 
     return False
@@ -708,6 +755,9 @@ def _infer_requires(intent: str, prompt: str) -> dict[str, bool]:
         )
     ) or any(t in p for t in place_tokens)
 
+    if not mentions_place and re.search(r"\bfor\s+(?:the\s+)?[A-Z]", raw):
+        mentions_place = True
+
     if intent == "trend_over_time":
         requires_aoi = not global_scope
     elif intent == "data_lookup":
@@ -872,7 +922,7 @@ def _needs_user_input(response: str, requires: dict[str, bool], struct: dict[str
     aoi_disambig = bool(disambig.search(rl) or did_you_mean.search(rl) or which_one.search(rl))
     if aoi_disambig:
         # If there are multiple candidates OR we simply have no AOI selected, treat as blocking.
-        if aoi_missing_struct or bool(struct.get("aoi_candidates_struct")) or int(struct.get("aoi_options_unique_count") or 0) > 1:
+        if bool(requires.get("requires_aoi")) or aoi_missing_struct or bool(struct.get("aoi_candidates_struct")) or int(struct.get("aoi_options_unique_count") or 0) > 1:
             asked_fields.append("missing_aoi")
 
     if (ask_verbs.search(rl) or q_ask.search(rl)) and aoi_terms.search(rl):
@@ -952,7 +1002,7 @@ def _metric_sanity_fail(response: str) -> bool:
     return False
 
 
-def _classify_dataset_family(dataset_name: str) -> str:
+def _classify_dataset_family(dataset_name: str) -> str | None:
     """Bucket dataset names into a small, stable taxonomy."""
     d = (dataset_name or "").lower()
     if not d:
@@ -1259,7 +1309,9 @@ def compute_derived_interactions(traces: list[dict[str, Any]]) -> pd.DataFrame:
             answer_type = "answer"
         needs_ui, needs_reason = _needs_user_input(response, requires, struct)
         metric_fail = _metric_sanity_fail(response)
-        has_citations = bool(struct.get("citations_struct") or text_flags.get("citations_text"))
+        citations_any = bool(
+            struct.get("citations_struct") or text_flags.get("citations_text") or struct.get("dataset_has_citation")
+        )
         completion_state, struct_good_trend, struct_good_lookup, struct_fail_reason = _completion_state(
             intent_primary,
             answer_type,
@@ -1267,7 +1319,7 @@ def compute_derived_interactions(traces: list[dict[str, Any]]) -> pd.DataFrame:
             struct,
             requires,
             bool(metric_fail),
-            has_citations,
+            citations_any,
         )
         dataset_name = struct.get("dataset_name", "")
         dataset_family = _classify_dataset_family(dataset_name)
@@ -1328,7 +1380,6 @@ def compute_derived_interactions(traces: list[dict[str, Any]]) -> pd.DataFrame:
                 "mentions_no_data_language": bool(mentions_no_data_language),
                 "no_data_with_analysis": bool(no_data_with_analysis),
                 "metric_sanity_fail": bool(metric_fail),
-                "has_citations": bool(has_citations),
                 "needs_user_input": bool(needs_ui),
                 "needs_user_input_reason": needs_reason,
                 "completion_state": completion_state,
@@ -1499,7 +1550,11 @@ def summarize_content(derived: pd.DataFrame, timestamp_col: str = "timestamp") -
     answer_counts = derived["answer_type"].value_counts(dropna=False).to_dict() if rows else {}
     completion_counts = derived["completion_state"].value_counts(dropna=False).to_dict() if rows else {}
     reason_counts = derived["needs_user_input_reason"].replace("", pd.NA).dropna().value_counts().to_dict() if rows else {}
-    has_citations = (derived["citations_struct"].fillna(False) | derived["citations_text"].fillna(False)) if rows else pd.Series(dtype=bool)
+    citations_shown = derived["citations_text"].fillna(False) if rows else pd.Series(dtype=bool)
+    citation_metadata_present = (
+        derived["citations_struct"].fillna(False) | derived["dataset_has_citation"].fillna(False)
+    ) if rows else pd.Series(dtype=bool)
+    citations_any = (citations_shown | citation_metadata_present) if rows else pd.Series(dtype=bool)
 
     scored = derived[derived["intent_primary"].isin(SCORED_INTENTS)] if rows else derived
     data_intents = derived[derived["requires_data"] == True] if rows else derived
@@ -1562,7 +1617,9 @@ def summarize_content(derived: pd.DataFrame, timestamp_col: str = "timestamp") -
         "completion_state_rates": {k: _pct(v, rows) for k, v in completion_counts.items()},
         "needs_user_input_reason_counts": reason_counts,
         "metric_sanity_fail_rate": _pct(derived["metric_sanity_fail"].fillna(False).sum(), rows),
-        "has_citations_rate": _pct(has_citations.sum(), rows),
+        "citations_shown_rate": _pct(citations_shown.sum(), rows),
+        "citation_metadata_present_rate": _pct(citation_metadata_present.sum(), rows),
+        "citations_any_rate": _pct(citations_any.sum(), rows),
         "dataset_identifiable_rate_scored_intents": _pct(scored["dataset_identifiable"].fillna(False).sum(), len(scored)),
         "codeact_present_rate": _pct(derived["codeact_present"].fillna(False).sum(), rows),
         "codeact_present_rate_scored_intents": _pct(scored["codeact_present"].fillna(False).sum(), len(scored)),
@@ -1575,7 +1632,11 @@ def summarize_content(derived: pd.DataFrame, timestamp_col: str = "timestamp") -
         "needs_user_input_rate_scored_intents": _pct((scored["completion_state"] == "needs_user_input").sum(), len(scored)),
         "error_rate_scored_intents": _pct((scored["completion_state"] == "error").sum(), len(scored)),
         "global_dataset_identifiable_rate_scored_intents": global_quality["dataset_identifiable_rate_scored_intents"],
-        "global_citation_rate": global_quality["has_citations_rate"],
+        "citations_shown_rate_scored_intents": _pct(scored["citations_text"].fillna(False).sum(), len(scored)),
+        "citation_metadata_present_rate_scored_intents": _pct(
+            (scored["citations_struct"].fillna(False) | scored["dataset_has_citation"].fillna(False)).sum(),
+            len(scored),
+        ),
         "threads_ended_after_needs_user_input_rate": global_quality["threads_ended_after_needs_user_input_rate"],
     }
 
@@ -1613,12 +1674,15 @@ def build_content_slices(derived: pd.DataFrame) -> pd.DataFrame:
                 "needs_user_input_rate",
                 "error_rate",
                 "metric_sanity_fail_rate",
-                "has_citations_rate",
+                "citations_shown_rate",
+                "citation_metadata_present_rate",
             ]
         )
 
     df = derived.copy()
-    df["has_citations"] = df["citations_struct"].fillna(False) | df["citations_text"].fillna(False)
+    df["citations_shown"] = df["citations_text"].fillna(False)
+    df["citation_metadata_present"] = df["citations_struct"].fillna(False) | df["dataset_has_citation"].fillna(False)
+
     grouped = (
         df.groupby(["intent_primary", "complexity_bucket"], dropna=False)
         .agg(
@@ -1627,7 +1691,11 @@ def build_content_slices(derived: pd.DataFrame) -> pd.DataFrame:
             needs_user_input_rate=("completion_state", lambda s: _pct((s == "needs_user_input").sum(), len(s))),
             error_rate=("completion_state", lambda s: _pct((s == "error").sum(), len(s))),
             metric_sanity_fail_rate=("metric_sanity_fail", lambda s: _pct(s.fillna(False).sum(), len(s))),
-            has_citations_rate=("has_citations", lambda s: _pct(s.fillna(False).sum(), len(s))),
+            citations_shown_rate=("citations_shown", lambda s: _pct(s.fillna(False).sum(), len(s))),
+            citation_metadata_present_rate=(
+                "citation_metadata_present",
+                lambda s: _pct(s.fillna(False).sum(), len(s)),
+            ),
         )
         .reset_index()
     )
