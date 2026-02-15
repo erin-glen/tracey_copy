@@ -840,6 +840,7 @@ def _answer_type(
         r"could not (?:find|locate)|couldn't (?:find|locate)|"
         r"cannot (?:find|locate)|can't (?:find|locate)|unable to (?:find|locate)|"
         r"(?:do not|don't|cannot|can't)\s+(?:currently\s+)?support|"
+        r"(?:do not|don't|cannot|can't)\s+have\s+access|"
         r"not supported|unsupported|outside (?:our|the) coverage|outside coverage|"
         r"unable to (?:process|handle).{0,40}\b(?:global|world(?:wide)?|entire world|whole world|continent(?:al)?)\b|"
         r"\b(?:global|worldwide|continental|entire world|whole world)\b.{0,60}\b(?:not supported|unsupported|too large|can't|cannot|unable)\b)\b",
@@ -891,7 +892,7 @@ def _needs_user_input(response: str, requires: dict[str, bool], struct: dict[str
     time_terms = re.compile(
         r"\b(time range|date range|timeframe|period|years?|months?|dates?|start|end|"
         r"rango de tiempo|rango de fechas|periodo|per[ií]odo|a[nñ]os?|fechas?|inicio|fin|"
-        r"intervalo de tempo|anos?|datas?|in[ií]cio|fim|"
+        r"intervalo de tempo|anos?|datas|data(?:s)?\s+de|in[ií]cio|fim|"
         r"rentang waktu|periode|tahun|tanggal|mulai|akhir)\b"
     )
     dataset_terms = re.compile(
@@ -903,10 +904,20 @@ def _needs_user_input(response: str, requires: dict[str, bool], struct: dict[str
 
     # Disambiguation: multiple location matches / "did you mean" / "which one"
     disambig = re.compile(
-        r"\b(found|there (?:are|were)|i see)\b.{0,80}\b(multiple|several|two|2|three|3)\b.{0,80}\b(location(?:s)?|place(?:s)?|match(?:es)?|option(?:s)?|result(?:s)?)\b"
+        r"\b(found|there (?:are|were)|i see)\b.{0,120}\b"
+        r"(multiple|several|two|2|three|3|four|4|five|5|\d{2,4})\b.{0,120}\b"
+        r"(location(?:s)?|place(?:s)?|match(?:es)?|option(?:s)?|result(?:s)?|candidate(?:s)?|"
+        r"protected area(?:s)?|territor(?:y|ies)|admin(?:istrative)? units?|district(?:s)?|"
+        r"province(?:s)?|state(?:s)?|country(?:ies)?|region(?:s)?|area(?:s)?)\b"
     )
-    did_you_mean = re.compile(r"\b(did you mean|do you mean)\b")
-    which_one = re.compile(r"\b(which one|which of (?:these|those)|choose one|select one)\b")
+    did_you_mean = re.compile(r"\b(did you mean|do you mean|if you meant|if you mean|if you intended)\b")
+    which_one = re.compile(r"\b(which one|which of (?:these|those)|choose one|select one|pick one)\b")
+    too_many = re.compile(
+        r"\b(too many|hundreds of|dozens of|more than\s+\d+)\b.{0,80}\b(location(?:s)?|place(?:s)?|match(?:es)?|option(?:s)?|result(?:s)?|area(?:s)?|protected area(?:s)?|territor(?:y|ies)|admin(?:istrative)? units?|district(?:s)?|province(?:s)?|state(?:s)?|country(?:ies)?|region(?:s)?)\b"
+    )
+    system_limit = re.compile(
+        r"\b(system limitation(?:s)?|limitations with processing|system limitations with processing|too (?:many|large) to (?:process|analy[sz]e)|cannot (?:process|handle)|can't (?:process|handle))\b"
+    )
 
     q_ask = re.compile(r"\b(which|what|cu[aá]l|qu[eé]|qual)\b[^?.]{0,120}\?")
 
@@ -919,7 +930,19 @@ def _needs_user_input(response: str, requires: dict[str, bool], struct: dict[str
     asked_fields: list[str] = []
 
     # AOI: explicit ask, or disambiguation cues
-    aoi_disambig = bool(disambig.search(rl) or did_you_mean.search(rl) or which_one.search(rl))
+    aoi_disambig = bool(
+        disambig.search(rl)
+        or did_you_mean.search(rl)
+        or too_many.search(rl)
+        or system_limit.search(rl)
+        or (
+            which_one.search(rl)
+            and (
+                struct.get("aoi_candidates_struct")
+                or struct.get("aoi_options_unique_count", 0) > 1
+            )
+        )
+    )
     if aoi_disambig:
         # If there are multiple candidates OR we simply have no AOI selected, treat as blocking.
         if bool(requires.get("requires_aoi")) or aoi_missing_struct or bool(struct.get("aoi_candidates_struct")) or int(struct.get("aoi_options_unique_count") or 0) > 1:
@@ -1006,7 +1029,7 @@ def _classify_dataset_family(dataset_name: str) -> str | None:
     """Bucket dataset names into a small, stable taxonomy."""
     d = (dataset_name or "").lower()
     if not d:
-        return "unknown"
+        return None
 
     if "tree cover loss" in d or "deforestation" in d or "forest loss" in d:
         if "driver" in d:
@@ -1144,6 +1167,8 @@ def _completion_state(
 
     if answer_type in {"missing_output", "model_error", "empty_or_short"}:
         state = "error"
+        # For hard error states, the specific answer_type is the most actionable failure token.
+        reasons = [answer_type]
     elif needs_user_input:
         state = "needs_user_input"
     elif answer_type == "no_data":
