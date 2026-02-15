@@ -1,5 +1,6 @@
 import base64
 import importlib.util
+import pandas as pd
 import pathlib
 import sys
 import types
@@ -487,5 +488,99 @@ class TestContentKPIs(unittest.TestCase):
         self.assertTrue(row.get("aoi_candidates_struct"))
         # Candidate options should not be treated as a selected AOI.
         self.assertFalse(row.get("aoi_selected_struct"))
+
+    def test_time_terms_do_not_match_english_data_word(self):
+        response = "What specific environmental data would you like to explore?"
+        requires = {"requires_aoi": False, "requires_time_range": False, "requires_dataset": False}
+        struct = {
+            "aoi_selected_struct": True,
+            "time_range_struct": False,
+            "dataset_struct": False,
+            "aoi_candidates_struct": False,
+            "aoi_options_unique_count": 0,
+        }
+        needs, reason = content_kpis._needs_user_input(response, requires, struct)
+        self.assertFalse(needs)
+        self.assertEqual(reason, "")
+
+    def test_no_data_detects_no_access_phrase(self):
+        traces = [
+            {
+                "id": "t_no_access",
+                "timestamp": "2025-01-01T00:00:00Z",
+                "sessionId": "s1",
+                "thread_id": "th1",
+                "userId": "u1",
+                "level": "info",
+                "errorCount": 0,
+                "latency": 1.0,
+                "input_tokens": 10,
+                "output_tokens": 20,
+                "input": {"messages": [{"type": "human", "content": "Do we have soil quality data?"}]},
+                "output": {
+                    "messages": [
+                        {
+                            "role": "assistant",
+                            "content": "I do not have access to soil quality data in my available datasets.",
+                        }
+                    ]
+                },
+            }
+        ]
+        out = compute_derived_interactions(traces)
+        self.assertEqual(out.loc[0, "answer_type"], "no_data")
+        self.assertEqual(out.loc[0, "completion_state"], "no_data")
+
+    def test_dataset_family_is_null_when_missing(self):
+        traces = [
+            {
+                "id": "t_no_dataset",
+                "timestamp": "2025-01-01T00:00:00Z",
+                "sessionId": "s1",
+                "thread_id": "th1",
+                "userId": "u1",
+                "level": "info",
+                "errorCount": 0,
+                "latency": 1.0,
+                "input_tokens": 10,
+                "output_tokens": 20,
+                "input": {"messages": [{"type": "human", "content": "Ghana"}]},
+                "output": {"messages": [{"role": "assistant", "content": "I have selected Ghana."}]},
+            }
+        ]
+        out = compute_derived_interactions(traces)
+        self.assertTrue(pd.isna(out.loc[0, "dataset_family"]))
+
+    def test_needs_user_input_detects_too_many_candidates_even_with_aoi_selected(self):
+        response = (
+            "I found 41 protected areas in Loreto, which is too many to analyze at once. "
+            "Could you please specify which protected area you mean?"
+        )
+        requires = {"requires_aoi": True, "requires_time_range": False, "requires_dataset": False}
+        struct = {
+            "aoi_selected_struct": True,
+            "time_range_struct": True,
+            "dataset_struct": True,
+            "aoi_candidates_struct": False,
+            "aoi_options_unique_count": 0,
+        }
+        needs, reason = content_kpis._needs_user_input(response, requires, struct)
+        self.assertTrue(needs)
+        self.assertEqual(reason, "missing_aoi")
+
+    def test_which_of_these_followup_not_needs_user_input_without_candidates(self):
+        response = "Which of these would you like to see next?"
+        requires = {"requires_aoi": True, "requires_time_range": False, "requires_dataset": False}
+        struct = {
+            "aoi_selected_struct": True,
+            "time_range_struct": True,
+            "dataset_struct": True,
+            "aoi_candidates_struct": False,
+            "aoi_options_unique_count": 0,
+        }
+        needs, reason = content_kpis._needs_user_input(response, requires, struct)
+        self.assertFalse(needs)
+        self.assertEqual(reason, "")
+
 if __name__ == "__main__":
     unittest.main()
