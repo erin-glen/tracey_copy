@@ -1,5 +1,9 @@
 """GNW Trace Evaluation Utilities."""
 
+from utils.fetch_throttle import (
+    TokenBucket,
+    SharedBudget,
+)
 from utils.langfuse_api import (
     get_langfuse_headers,
     get_annotation_queue_item,
@@ -114,6 +118,9 @@ from utils.charts import (
 )
 
 __all__ = [
+    # Fetch throttle
+    "TokenBucket",
+    "SharedBudget",
     # Langfuse API
     "get_langfuse_headers",
     "get_annotation_queue_item",
