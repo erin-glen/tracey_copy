@@ -272,7 +272,7 @@ METRICS: dict[str, dict[str, Any]] = {
         "category": "Content KPIs · Deterministic",
         "definition": "Share of conversation threads whose *last* turn was classified as `needs_user_input`.",
         "formula": "For each thread: take last turn → count if needs_user_input; divide by total threads.",
-        "provenance": "Derived by grouping derived interactions by thread key (sessionId/thread_id/userId fallback).",
+        "provenance": "Derived by grouping derived interactions by thread key (thread_id → sessionId → trace_id fallback).",
         "caveats": [
             "This is a churn proxy; a thread can end for many reasons (user satisfied, user left, etc.).",
             "Requires correct thread grouping; missing IDs can affect results.",
@@ -584,7 +584,7 @@ PAGES: dict[str, dict[str, Any]] = {
         ],
         "data": [
             "Thread summaries come from `build_thread_summary(derived)`.",
-            "Thread grouping uses `compute_thread_key()` (sessionId/thread_id/userId fallback).",
+            "Thread grouping uses `compute_thread_key()` (thread_id → sessionId → trace_id fallback).",
         ],
         "key_metrics": [
             "threads_total",
