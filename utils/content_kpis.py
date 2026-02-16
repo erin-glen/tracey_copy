@@ -850,7 +850,7 @@ def _answer_type(
     # These patterns are constrained to technical/system failure phrasing.
     if re.search(
         r"\b(traceback|exception|internal error|unexpected error|something went wrong|service unavailable|timed out|timeout|"
-        r"technical (?:issue|problem|error)|(?:error|erro|problema|falha)\s+t[eé]cnic[oa])\b",
+        r"technical (?:issue|problem|error)|(?:errors?|erros?|problemas?|falhas?)\s+t[eé]cnic(?:o|a|os|as))\b",
         t,
     ):
         return "model_error"
