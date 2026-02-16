@@ -6,7 +6,7 @@ import re
 from difflib import SequenceMatcher
 from collections import Counter
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Dict, List, Tuple
 
 import pandas as pd
 
@@ -855,18 +855,17 @@ def _answer_type(
     return "answer"
 
 
-def _needs_user_input(response: str, requires: dict[str, bool], struct: dict[str, Any]) -> tuple[bool, str]:
-    """Detect when the assistant is blocked on missing user-provided parameters.
+def _needs_user_input(
+    response: str,
+    requires: Dict[str, bool],
+    struct: Dict[str, Any],
+) -> Tuple[bool, str]:
+    """Detect whether the assistant is requesting blocking user input.
 
-    This is intentionally conservative:
-    - We only emit needs_user_input when the assistant is explicitly asking the user
-      to clarify/provide/select something OR when there's strong AOI disambiguation language.
-    - We avoid triggering on polite follow-up offers ("Would you like...?") that appear
-      at the end of complete answers.
-
-    IMPORTANT: We do *not* rely solely on `requires_*` gating because prompt-level intent
-    inference can be wrong on short prompts. If the assistant is clearly asking for a missing
-    AOI/time/dataset, we mark needs_user_input even when the prompt-level requires flags were false.
+    We treat this as a deterministic, conservative signal:
+    - Missing required fields (AOI / time / dataset) according to `requires`
+    - OR explicit clarification requests in the response when the corresponding
+      structured fields are missing.
     """
     r = (response or "").strip()
     if not r:
@@ -874,264 +873,269 @@ def _needs_user_input(response: str, requires: dict[str, bool], struct: dict[str
 
     rl = r.lower()
 
-    ask_verbs = re.compile(
-        r"\b(please|pls|could you|can you|select|choose|provide|specify|tell me|clarify|confirm|"
-        r"por favor|puedes|podr[ií]a(?:s)?|selecciona|elige|indica|especifica|necesito|"
-        r"pode|voc[eê] pode|voce pode|selecione|escolha|informe|especifique|preciso|"
-        r"tolong|mohon|bisa(?:kah)?|dapatkah|pilih|tentukan|perlu)\b"
-    )
-    aoi_terms = re.compile(
-        r"\b(aoi|"
-        r"area(?:s)?|location(?:s)?|place(?:s)?|region(?:s)?|polygon(?:s)?|"
-        r"countr(?:y|ies)|state(?:s)?|province(?:s)?|district(?:s)?|count(?:y|ies)|municipalit(?:y|ies)|"
-        r"[áa]rea(?:s)?|zona(?:s)?|ubicaci[oó]n(?:es)?|lugar(?:es)?|regi[oó]n(?:es)?|"
-        r"pa[ií]s(?:es)?|estado(?:s)?|provincia(?:s)?|municipio(?:s)?|"
-        r"local(?:es)?|regi[aã]o|regi[oõ]es|prov[ií]ncia(?:s)?|munic[ií]pio(?:s)?|"
-        r"wilayah|daerah|lokasi|kawasan|provinsi|kabupaten|kota)\b"
-    )
-    time_terms = re.compile(
-        r"\b(time range|date range|timeframe|period|years?|months?|dates?|start|end|"
-        r"rango de tiempo|rango de fechas|periodo|per[ií]odo|a[nñ]os?|fechas?|inicio|fin|"
-        r"intervalo de tempo|anos?|datas|data(?:s)?\s+de|in[ií]cio|fim|"
-        r"rentang waktu|periode|tahun|tanggal|mulai|akhir)\b"
-    )
-    dataset_terms = re.compile(
-        r"\b(dataset(?:s)?|data set(?:s)?|layer(?:s)?|map layer(?:s)?|"
-        r"conjunto de datos|capa(?:s)?|"
-        r"conjunto de dados|camada(?:s)?|"
-        r"lapisan)\b"
-    )
-
-    # Disambiguation: multiple location matches / "did you mean" / "which one"
-    disambig = re.compile(
-        r"\b(found|there (?:are|were)|i see)\b.{0,120}\b"
-        r"(multiple|several|two|2|three|3|four|4|five|5|\d{2,4})\b.{0,120}\b"
-        r"(location(?:s)?|place(?:s)?|match(?:es)?|option(?:s)?|result(?:s)?|candidate(?:s)?|"
-        r"protected area(?:s)?|territor(?:y|ies)|admin(?:istrative)? units?|district(?:s)?|"
-        r"province(?:s)?|state(?:s)?|country(?:ies)?|region(?:s)?|area(?:s)?)\b"
-    )
-    did_you_mean = re.compile(r"\b(did you mean|do you mean|if you meant|if you mean|if you intended)\b")
-    which_one = re.compile(r"\b(which one|which of (?:these|those)|choose one|select one|pick one)\b")
-    too_many = re.compile(
-        r"\b(too many|hundreds of|dozens of|more than\s+\d+)\b.{0,80}\b(location(?:s)?|place(?:s)?|match(?:es)?|option(?:s)?|result(?:s)?|area(?:s)?|protected area(?:s)?|territor(?:y|ies)|admin(?:istrative)? units?|district(?:s)?|province(?:s)?|state(?:s)?|country(?:ies)?|region(?:s)?)\b"
-    )
-    system_limit = re.compile(
-        r"\b(system limitation(?:s)?|limitations with processing|system limitations with processing|too (?:many|large) to (?:process|analy[sz]e)|cannot (?:process|handle)|can't (?:process|handle))\b"
-    )
-
-    q_ask = re.compile(r"\b(which|what|cu[aá]l|qu[eé]|qual)\b[^?.]{0,120}\?")
-
-    # --- Structured missingness (independent of requires) -----------------
+    # Structured presence flags
     aoi_missing_struct = not bool(struct.get("aoi_selected_struct"))
     time_missing_struct = not bool(struct.get("time_range_struct"))
     dataset_missing_struct = not bool(struct.get("dataset_struct"))
 
-    # --- Response-driven asked field detection ----------------------------
-    asked_fields: list[str] = []
+    aoi_candidates_struct = bool(struct.get("aoi_candidates_struct"))
+    aoi_options_unique_count = int(struct.get("aoi_options_unique_count") or 0)
 
-    # AOI: explicit ask, or disambiguation cues
-    aoi_disambig = bool(
-        disambig.search(rl)
-        or did_you_mean.search(rl)
-        or too_many.search(rl)
-        or system_limit.search(rl)
-        or (
-            which_one.search(rl)
-            and (
-                struct.get("aoi_candidates_struct")
-                or struct.get("aoi_options_unique_count", 0) > 1
-            )
-        )
+    # Verb / question triggers (keep these fairly strict; we gate by domain terms)
+    ask_verbs = re.compile(
+        r"\b("
+        r"please|could you|can you|"
+        r"select|choose|provide|specify|tell me|clarify|confirm|narrow|pick|enter|upload|share|draw|"
+        r"por favor|puedes|podr[ií]as|selecciona|elige|indica|especifica|"
+        r"por favor,?\s+pode|poderia|especifique|selecione"
+        r")\b",
+        re.IGNORECASE,
     )
-    if aoi_disambig:
-        # If there are multiple candidates OR we simply have no AOI selected, treat as blocking.
-        if bool(requires.get("requires_aoi")) or aoi_missing_struct or bool(struct.get("aoi_candidates_struct")) or int(struct.get("aoi_options_unique_count") or 0) > 1:
-            asked_fields.append("missing_aoi")
 
-    if (ask_verbs.search(rl) or q_ask.search(rl)) and aoi_terms.search(rl):
-        if aoi_missing_struct:
-            asked_fields.append("missing_aoi")
+    # Less brittle than the previous variant: allow periods/parentheses (e.g., "e.g.")
+    q_ask = re.compile(
+        r"\b(which|what|cu[aá]l|qu[eé]|qual)\b[^?]{0,200}\?",
+        re.IGNORECASE,
+    )
 
-    # Time
-    if (ask_verbs.search(rl) or q_ask.search(rl)) and time_terms.search(rl):
-        if time_missing_struct:
-            asked_fields.append("missing_time")
+    # Domain-term buckets
+    aoi_terms = re.compile(
+        r"\b("
+        r"aoi|area of interest|location|place|region|country|state|province|district|county|"
+        r"municipality|city|boundary|polygon|protected area"
+        r")\b",
+        re.IGNORECASE,
+    )
+    time_terms = re.compile(
+        r"\b("
+        r"time range|date range|timeframe|time period|period|"
+        r"start date|end date|start year|end year|"
+        r"years?|months?|dates?"
+        r")\b|\bdata(?:s)?\s+de\b|\bfecha(?:s)?\b",
+        re.IGNORECASE,
+    )
+    dataset_terms = re.compile(
+        r"\b(dataset|data set|layer|source|data layer|data-source|data source)\b|"
+        r"\bcamadas?\b|\bcapa(?:s)?\b|\bdataset(?:s)?\b|\bsource data\b",
+        re.IGNORECASE,
+    )
+    # Common dataset-selection phrasing that does not use the word "dataset"
+    dataset_extra = re.compile(
+        r"\b(?:what|which)\b[^?]{0,40}\bdata\b|"
+        r"\bwhat\s+kind\s+of\s+data\b|"
+        r"\bdata\s*:\s*|"
+        r"\bqu[eé]\s+datos\b|"
+        r"\bcu[aá]l(?:es)?\s+datos\b",
+        re.IGNORECASE,
+    )
 
-    # Dataset
-    if (ask_verbs.search(rl) or q_ask.search(rl)) and dataset_terms.search(rl):
-        if dataset_missing_struct:
-            asked_fields.append("missing_dataset")
+    # AOI disambiguation / refinement (avoid false positives from year ranges like 2001–2024)
+    disambig_multi = re.compile(
+        r"\b(?:found|there\s+(?:are|were)|i\s+see)\b.{0,80}\b"
+        r"(?:multiple|several|two|2|three|3|four|4|five|5|a\s+few|a\s+couple(?:\s+of)?)\b"
+        r".{0,60}\b(?:locations?|places?|matches?|options?|results?|candidates?)\b",
+        re.IGNORECASE,
+    )
+    disambig_numeric = re.compile(
+        r"\b(?:found|there\s+(?:are|were)|i\s+see)\b.{0,80}\b(\d{1,3})\s+"
+        r"(?:locations?|places?|matches?|options?|results?|candidates?|protected\s+areas?|"
+        r"territor(?:y|ies)|admin(?:istrative)?\s+units?|district(?:s)?|province(?:s)?|"
+        r"state(?:s)?|countr(?:y|ies)|region(?:s)?|area(?:s)?)\b",
+        re.IGNORECASE,
+    )
 
-    asked_fields = sorted(set(asked_fields))
-    if asked_fields:
-        reason = "multiple_missing" if len(asked_fields) > 1 else asked_fields[0]
-        return True, reason
+    which_one = re.compile(r"\b(?:which\s+one|which\s+of\s+these)\b", re.IGNORECASE)
+    did_you_mean = re.compile(r"\bdid\s+you\s+mean\b", re.IGNORECASE)
+    specify_which = re.compile(
+        r"\b(?:please\s+specify\s+which|specify\s+which)\b", re.IGNORECASE
+    )
 
-    # --- Requires-gated fallback (legacy behavior) -------------------------
-    missing: list[str] = []
+    # "Too many to analyze" variants (often indicates user must narrow AOI)
+    system_limit = re.search(
+        r"\b(too\s+many|hundreds|dozens|more\s+than\s+\d+)\b.{0,80}\b"
+        r"(to\s+analyze|to\s+process|to\s+handle|results?)\b",
+        rl,
+    )
+
+    aoi_disambig = False
+    if disambig_multi.search(rl):
+        aoi_disambig = True
+    else:
+        m_num = disambig_numeric.search(rl)
+        if m_num:
+            try:
+                n = int(m_num.group(1))
+                if n >= 2:
+                    aoi_disambig = True
+            except Exception:
+                aoi_disambig = True
+
+    if did_you_mean.search(rl) or specify_which.search(rl):
+        aoi_disambig = True
+
+    if which_one.search(rl) and (aoi_candidates_struct or aoi_options_unique_count > 1):
+        aoi_disambig = True
+
+    # Treat explicit system-limit language as an AOI-refinement request only when AOI terms appear
+    aoi_refine_request = bool(aoi_disambig or (system_limit and aoi_terms.search(rl)))
+
+    asked_fields: List[str] = []
+
+    # AOI: missing OR refinement needed (even if an AOI is selected, e.g., "too many protected areas")
+    if (aoi_missing_struct or aoi_refine_request) and aoi_terms.search(rl) and (
+        ask_verbs.search(rl) or q_ask.search(rl) or aoi_disambig
+    ):
+        asked_fields.append("missing_aoi")
+
+    # Time: missing and the assistant is asking for time/date info
+    if time_missing_struct and time_terms.search(rl) and (ask_verbs.search(rl) or q_ask.search(rl)):
+        asked_fields.append("missing_time")
+
+    # Dataset: missing and the assistant is asking for dataset/data-layer info
+    if dataset_missing_struct and (dataset_terms.search(rl) or dataset_extra.search(rl)) and (
+        ask_verbs.search(rl) or q_ask.search(rl)
+    ):
+        asked_fields.append("missing_dataset")
+
+    # Required fields missing according to inferred requirements
+    missing_required: List[str] = []
     if requires.get("requires_aoi") and aoi_missing_struct:
-        missing.append("missing_aoi")
+        missing_required.append("missing_aoi")
     if requires.get("requires_time_range") and time_missing_struct:
-        missing.append("missing_time")
+        missing_required.append("missing_time")
     if requires.get("requires_dataset") and dataset_missing_struct:
-        missing.append("missing_dataset")
-
-    if not missing:
+        missing_required.append("missing_dataset")
+    # If the assistant explicitly asked for missing inputs, prefer that for the reason label.
+    # This avoids mislabeling the "blocking field" when `requires_*` is broad but the
+    # assistant is only asking for (say) AOI refinement.
+    if not missing_required and not asked_fields:
         return False, ""
 
-    # Generic clarification phrasing, gated on required missingness.
-    generic_clarify = bool(
-        re.search(r"\b(need|requires|required|necesito|preciso|perlu)\b", rl)
-        and re.search(r"\b(specify|provide|select|choose|clarify|especifica|indica|informe|tentukan|pilih)\b", rl)
-    )
+    if asked_fields:
+        missing_for_reason = asked_fields
+    else:
+        missing_for_reason = missing_required
 
-    if generic_clarify:
-        reason = "multiple_missing" if len(missing) > 1 else missing[0]
-        return True, reason
-
-    return False, ""
-
-
-def _metric_sanity_fail(response: str) -> bool:
-    """Flag obviously broken percentage outputs.
-
-    This is intentionally conservative: it should *not* fire on phrases like
-    "I'm 100% sure". It focuses on numerically implausible percentages and
-    share/portion contexts that exceed 100%.
-    """
-    text = response or ""
-    if not text:
-        return False
-
-    lower = text.lower()
-    pct_re = re.compile(r"(-?\d+(?:\.\d+)?)\s*%")
-    share_ctx = re.compile(r"\b(share|percentage|percent of|portion|proportion|of total)\b", re.I)
-
-    for m in pct_re.finditer(text):
-        try:
-            val = float(m.group(1))
-        except Exception:
-            continue
-
-        # Hard bounds: clearly broken.
-        if val < -200 or val > 2000:
-            return True
-
-        # Softer bounds if the local context indicates a share/portion.
-        ctx = lower[max(0, m.start() - 50) : m.start()]
-        if share_ctx.search(ctx) and (val < 0 or val > 100):
-            return True
-
-    return False
+    reason = missing_for_reason[0] if len(missing_for_reason) == 1 else "multiple_missing"
+    return True, reason
 
 
 def _classify_dataset_family(dataset_name: str) -> str | None:
-    """Bucket dataset names into a small, stable taxonomy."""
-    d = (dataset_name or "").lower()
-    if not d:
+    """Map a dataset name to a coarse 'family' for slice/group analysis.
+
+    This is intentionally heuristic and deterministic. If a name is missing or
+    we cannot confidently bucket it, we return None (missing) or "other".
+    """
+    name = (dataset_name or "").strip()
+    if not name:
         return None
 
-    if "tree cover loss" in d or "deforestation" in d or "forest loss" in d:
-        if "driver" in d:
-            return "tree_cover_loss_drivers"
-        return "tree_cover_loss"
-    if "dist-alert" in d or "dist alert" in d or "alert" in d:
-        return "alerts"
-    if "land cover" in d or "land use" in d:
-        return "land_cover"
-    if "grassland" in d:
-        return "grassland"
-    if "natural lands" in d or "sbtn" in d:
-        return "natural_lands"
-    if "greenhouse" in d or "ghg" in d or "carbon" in d or "flux" in d:
-        return "ghg_carbon"
+    s = name.lower()
 
-    if "tree" in d or "forest" in d:
-        return "forest"
-    if "climate" in d or "temperature" in d:
-        return "climate"
-    if "population" in d or "demograph" in d:
-        return "population"
+    # High-signal buckets
+    if "tree cover loss" in s:
+        return "tree_cover_loss"
+    if "tree cover gain" in s:
+        return "tree_cover_gain"
+    if "tree cover" in s:
+        return "tree_cover"
+
+    if "dist-alert" in s or "dist alert" in s:
+        return "dist_alert"
+
+    if "forest greenhouse gas" in s or "greenhouse gas" in s or "ghg" in s:
+        return "forest_ghg"
+
+    if "land cover" in s:
+        return "land_cover"
+
+    if "grassland" in s:
+        return "grassland"
+
+    if "protected area" in s or "protected areas" in s:
+        return "protected_areas"
+
+    if "carbon" in s or "co2" in s:
+        return "carbon"
+
     return "other"
 
 
-def _parse_time_window_days(start: str, end: str) -> float | None:
-    if not start or not end:
-        return None
-    try:
-        s = pd.to_datetime(start, utc=True, errors="coerce")
-        e = pd.to_datetime(end, utc=True, errors="coerce")
-        if pd.isna(s) or pd.isna(e):
-            return None
-        return float((e - s).days)
-    except Exception:
-        return None
+def _extract_codeact(output_obj: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract CodeAct-related counters from an output object."""
+    parts = find_codeact_parts(output_obj) or []
 
-
-def _extract_codeact(output_obj: Any) -> dict[str, Any]:
-    # Use canonical CodeAct discovery to avoid mismatches between nested output shapes.
-    parts = find_codeact_parts(output_obj)
-    if not parts:
-        return {
-            "codeact_present": False,
-            "codeact_parts_count": 0,
-            "codeact_code_blocks_count": 0,
-            "codeact_exec_outputs_count": 0,
-            "codeact_uses_analytics_api": False,
-            "codeact_decoded_chars_total": 0,
-        }
-
-    decoded_parts = list(iter_decoded_codeact_parts(output_obj))
-    # Fallback to raw parts count if decoding yields nothing.
-    parts_count = len(decoded_parts) or len(parts)
-
-    code_blocks = 0
-    exec_outputs = 0
-    uses_analytics_api = False
     decoded_chars_total = 0
-    analytics_host_re = re.compile(r"\banalytics\.globalnaturewatch\.org\b", re.IGNORECASE)
+    code_blocks_count = 0
 
-    for part in decoded_parts:
-        ptype = str(part.get("type") or "").lower().strip()
-        decoded = str(part.get("decoded") or "")
-
-        if ptype in {"code_block", "code"} or "code_block" in ptype:
-            code_blocks += 1
-        if ptype in {"execution_output", "exec_output", "execution", "exec"} or "execution" in ptype:
-            exec_outputs += 1
-
+    for part in iter_decoded_codeact_parts({"codeact_parts": parts}):
+        p_type = str(part.get("type") or "").lower().strip()
+        decoded = part.get("decoded") or ""
         decoded_chars_total += len(decoded)
-        if analytics_host_re.search(decoded) or "/v1/query" in decoded.lower():
-            uses_analytics_api = True
+
+        is_code = p_type in {"code", "python", "sql", "bash", "javascript", "js"} or p_type.startswith("code")
+        if is_code:
+            code_blocks_count += 1
+
+    template_name = ""
+    for k in ("codeact_template_name", "template_name", "code_template", "template"):
+        v = output_obj.get(k)
+        if isinstance(v, str) and v.strip():
+            template_name = v.strip()
+            break
 
     return {
-        "codeact_present": True,
-        "codeact_parts_count": parts_count,
-        "codeact_code_blocks_count": code_blocks,
-        "codeact_exec_outputs_count": exec_outputs,
-        "codeact_uses_analytics_api": uses_analytics_api,
+        "codeact_present": bool(parts),
+        "codeact_parts_count": len(parts),
+        "codeact_code_blocks_count": code_blocks_count,
         "codeact_decoded_chars_total": decoded_chars_total,
+        "codeact_template_name": template_name,
     }
 
 
 def _count_raw_data_records(raw_data: Any) -> int:
-    """Best-effort count of raw records.
+    """Best-effort count of records in a raw_data payload.
 
-    In current GNW outputs, `raw_data` is commonly a dict keyed by query/run IDs
-    with nested dicts keyed by row index. Counting list/dict lengths at one level
-    provides a stable proxy for record volume.
+    The telemetry we ingest isn't fully standardized. `raw_data` may appear as:
+      - a list (row-oriented records)
+      - a dict with a list under common keys (records/rows/data/values)
+      - a dict-of-lists (column-oriented)
+      - a dict-of-dicts (e.g., query-id -> {row_index -> row})
+      - a string payload (CSV/JSON/text)
     """
+    if raw_data is None:
+        return 0
 
-    if isinstance(raw_data, list):
-        return len(raw_data)
-    if isinstance(raw_data, dict):
-        total = 0
-        for v in raw_data.values():
-            if isinstance(v, list):
-                total += len(v)
-            elif isinstance(v, dict):
-                total += len(v)
-        return total if total > 0 else len(raw_data)
+    try:
+        if isinstance(raw_data, list):
+            return len(raw_data)
+
+        if isinstance(raw_data, dict):
+            for k in ("records", "rows", "data", "values"):
+                v = raw_data.get(k)
+                if isinstance(v, list):
+                    return len(v)
+
+            # Column-oriented dict-of-lists (use the first list length)
+            for v in raw_data.values():
+                if isinstance(v, list):
+                    return len(v)
+
+            # Nested dict-of-dicts (common for query-id keyed payloads)
+            inner_counts: List[int] = []
+            for v in raw_data.values():
+                if isinstance(v, dict):
+                    inner_counts.append(len(v))
+            if inner_counts:
+                return max(inner_counts)
+
+            return 1 if raw_data else 0
+
+        if isinstance(raw_data, str):
+            return 1 if raw_data.strip() else 0
+    except Exception:
+        return 0
+
     return 0
 
 
@@ -1141,7 +1145,6 @@ def _completion_state(
     needs_user_input: bool,
     struct: dict[str, Any],
     requires: dict[str, bool],
-    metric_sanity_fail: bool,
     has_citations: bool,
 ) -> tuple[str, bool, bool, str]:
     reasons: list[str] = []
@@ -1162,8 +1165,6 @@ def _completion_state(
         ):
             reasons.append("no_citation")
 
-        if metric_sanity_fail:
-            reasons.append("metric_sanity")
 
     if answer_type in {"missing_output", "model_error", "empty_or_short"}:
         state = "error"
@@ -1279,12 +1280,6 @@ def compute_derived_interactions(traces: list[dict[str, Any]]) -> pd.DataFrame:
 
         analysis_executed = bool(has_raw_data or has_charts_data)
 
-        # --- Time window ----------------------------------------------------
-        # (Used both for QA and for intent rescue.)
-        time_window_days = _parse_time_window_days(
-            str(struct.get("time_start") or ""),
-            str(struct.get("time_end") or ""),
-        )
 
         text_flags = _text_flags(prompt, response)
 
@@ -1333,7 +1328,6 @@ def compute_derived_interactions(traces: list[dict[str, Any]]) -> pd.DataFrame:
             no_data_with_analysis = True
             answer_type = "answer"
         needs_ui, needs_reason = _needs_user_input(response, requires, struct)
-        metric_fail = _metric_sanity_fail(response)
         citations_any = bool(
             struct.get("citations_struct") or text_flags.get("citations_text") or struct.get("dataset_has_citation")
         )
@@ -1343,7 +1337,6 @@ def compute_derived_interactions(traces: list[dict[str, Any]]) -> pd.DataFrame:
             needs_ui,
             struct,
             requires,
-            bool(metric_fail),
             citations_any,
         )
         dataset_name = struct.get("dataset_name", "")
@@ -1390,21 +1383,16 @@ def compute_derived_interactions(traces: list[dict[str, Any]]) -> pd.DataFrame:
                 **text_flags,
                 "dataset_name": dataset_name,
                 "dataset_family": dataset_family,
-                "dataset_identifiable": bool(dataset_name),
                 "analysis_executed": analysis_executed,
-                "has_raw_data": has_raw_data,
                 "raw_data_len": raw_data_len,
-                "has_charts_data": has_charts_data,
                 "charts_count": charts_count,
                 "aoi_type": struct.get("aoi_type", ""),
                 "aoi_name": struct.get("aoi_name", ""),
                 "time_start": struct.get("time_start", ""),
                 "time_end": struct.get("time_end", ""),
-                "time_window_days": time_window_days,
                 "answer_type": answer_type,
                 "mentions_no_data_language": bool(mentions_no_data_language),
                 "no_data_with_analysis": bool(no_data_with_analysis),
-                "metric_sanity_fail": bool(metric_fail),
                 "needs_user_input": bool(needs_ui),
                 "needs_user_input_reason": needs_reason,
                 "completion_state": completion_state,
@@ -1641,11 +1629,10 @@ def summarize_content(derived: pd.DataFrame, timestamp_col: str = "timestamp") -
         "completion_state_counts": completion_counts,
         "completion_state_rates": {k: _pct(v, rows) for k, v in completion_counts.items()},
         "needs_user_input_reason_counts": reason_counts,
-        "metric_sanity_fail_rate": _pct(derived["metric_sanity_fail"].fillna(False).sum(), rows),
         "citations_shown_rate": _pct(citations_shown.sum(), rows),
         "citation_metadata_present_rate": _pct(citation_metadata_present.sum(), rows),
         "citations_any_rate": _pct(citations_any.sum(), rows),
-        "dataset_identifiable_rate_scored_intents": _pct(scored["dataset_identifiable"].fillna(False).sum(), len(scored)),
+        "dataset_identifiable_rate_scored_intents": _pct(scored["dataset_struct"].fillna(False).sum(), len(scored)),
         "codeact_present_rate": _pct(derived["codeact_present"].fillna(False).sum(), rows),
         "codeact_present_rate_scored_intents": _pct(scored["codeact_present"].fillna(False).sum(), len(scored)),
         "threads_ended_after_needs_user_input_rate": _pct(ended_nui, total_threads),
@@ -1698,7 +1685,6 @@ def build_content_slices(derived: pd.DataFrame) -> pd.DataFrame:
                 "complete_answer_rate",
                 "needs_user_input_rate",
                 "error_rate",
-                "metric_sanity_fail_rate",
                 "citations_shown_rate",
                 "citation_metadata_present_rate",
             ]
@@ -1715,7 +1701,6 @@ def build_content_slices(derived: pd.DataFrame) -> pd.DataFrame:
             complete_answer_rate=("completion_state", lambda s: _pct((s == "complete_answer").sum(), len(s))),
             needs_user_input_rate=("completion_state", lambda s: _pct((s == "needs_user_input").sum(), len(s))),
             error_rate=("completion_state", lambda s: _pct((s == "error").sum(), len(s))),
-            metric_sanity_fail_rate=("metric_sanity_fail", lambda s: _pct(s.fillna(False).sum(), len(s))),
             citations_shown_rate=("citations_shown", lambda s: _pct(s.fillna(False).sum(), len(s))),
             citation_metadata_present_rate=(
                 "citation_metadata_present",

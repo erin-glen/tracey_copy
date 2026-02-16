@@ -60,7 +60,7 @@ DEFAULT_SAMPLE_COLS = [
     "intent_primary",
     "dataset_name",
     "dataset_family",
-    "dataset_identifiable",
+    "dataset_struct",
     "aoi_name",
     "time_start",
     "time_end",

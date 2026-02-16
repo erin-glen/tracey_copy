@@ -261,7 +261,7 @@ class TestContentKPIs(unittest.TestCase):
         ]
 
         row = compute_derived_interactions(traces).iloc[0]
-        self.assertTrue(bool(row["has_raw_data"]))
+        self.assertGreater(int(row.get("raw_data_len", 0)), 0)
         self.assertEqual(int(row["raw_data_len"]), 2)
         self.assertTrue(bool(row["analysis_executed"]))
 
@@ -351,7 +351,8 @@ class TestContentKPIs(unittest.TestCase):
         ]
 
         row = compute_derived_interactions(traces).iloc[0]
-        self.assertFalse(bool(row["metric_sanity_fail"]))
+        self.assertNotEqual(row["answer_type"], "model_error")
+        self.assertNotEqual(row["completion_state"], "error")
 
     def test_flux_query_classified_as_data_lookup_without_question_mark(self):
         """Regression: noun-phrase carbon/flux queries should not fall into intent_primary='other'."""
@@ -490,6 +491,8 @@ class TestContentKPIs(unittest.TestCase):
         self.assertFalse(row.get("aoi_selected_struct"))
 
     def test_time_terms_do_not_match_english_data_word(self):
+        # "data" in English should not be interpreted as a *date/time* request,
+        # but it CAN be a dataset-selection question.
         response = "What specific environmental data would you like to explore?"
         requires = {"requires_aoi": False, "requires_time_range": False, "requires_dataset": False}
         struct = {
@@ -500,8 +503,8 @@ class TestContentKPIs(unittest.TestCase):
             "aoi_options_unique_count": 0,
         }
         needs, reason = content_kpis._needs_user_input(response, requires, struct)
-        self.assertFalse(needs)
-        self.assertEqual(reason, "")
+        self.assertTrue(needs)
+        self.assertEqual(reason, "missing_dataset")
 
     def test_no_data_detects_no_access_phrase(self):
         traces = [
@@ -567,6 +570,51 @@ class TestContentKPIs(unittest.TestCase):
         needs, reason = content_kpis._needs_user_input(response, requires, struct)
         self.assertTrue(needs)
         self.assertEqual(reason, "missing_aoi")
+
+    def test_needs_user_input_detects_missing_time_with_eg_abbrev(self):
+        response = "**Time Period**: What years would you like to analyze (e.g., 2015-2023)?"
+        requires = {"requires_aoi": False, "requires_time_range": False, "requires_dataset": False}
+        struct = {
+            "aoi_selected_struct": True,
+            "time_range_struct": False,
+            "dataset_struct": True,
+            "aoi_candidates_struct": False,
+            "aoi_options_unique_count": 0,
+        }
+        needs, reason = content_kpis._needs_user_input(response, requires, struct)
+        self.assertTrue(needs)
+        self.assertEqual(reason, "missing_time")
+
+    def test_needs_user_input_detects_data_colon_as_dataset_request(self):
+        response = "Could you please specify:\n- Data: Tree cover loss\n- Time range: 2015-2023"
+        requires = {"requires_aoi": False, "requires_time_range": False, "requires_dataset": False}
+        struct = {
+            "aoi_selected_struct": True,
+            "time_range_struct": False,
+            "dataset_struct": False,
+            "aoi_candidates_struct": False,
+            "aoi_options_unique_count": 0,
+        }
+        needs, reason = content_kpis._needs_user_input(response, requires, struct)
+        self.assertTrue(needs)
+        self.assertEqual(reason, "multiple_missing")
+
+    def test_aoi_disambig_does_not_trigger_on_year_ranges(self):
+        response = (
+            "I see you've selected the Forest greenhouse gas net flux dataset (2001-2024) "
+            "for Ondo State, Nigeria. Here are the results."
+        )
+        requires = {"requires_aoi": True, "requires_time_range": True, "requires_dataset": True}
+        struct = {
+            "aoi_selected_struct": True,
+            "time_range_struct": True,
+            "dataset_struct": True,
+            "aoi_candidates_struct": False,
+            "aoi_options_unique_count": 0,
+        }
+        needs, reason = content_kpis._needs_user_input(response, requires, struct)
+        self.assertFalse(needs)
+        self.assertEqual(reason, "")
 
     def test_which_of_these_followup_not_needs_user_input_without_candidates(self):
         response = "Which of these would you like to see next?"

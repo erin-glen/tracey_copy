@@ -229,7 +229,7 @@ METRICS: dict[str, dict[str, Any]] = {
         "name": "Dataset identifiable (scored)",
         "category": "Content KPIs · Deterministic",
         "definition": "Among *scored intents*, share of turns where a dataset/layer can be identified in the structured output.",
-        "formula": "`(# scored turns with dataset_identifiable == True) / (# scored turns)`",
+        "formula": "`(# scored turns with dataset_struct == True) / (# scored turns)`",
         "provenance": "Dataset name is extracted from tool output JSON via key-heuristics (e.g., `datasetName`, `layer`, `collection`).",
         "caveats": [
             "Heuristic extraction can miss datasets if schema changes.",
