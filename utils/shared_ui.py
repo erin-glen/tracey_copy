@@ -10,7 +10,10 @@ from typing import Any
 
 import streamlit as st
 
+import time as time_mod
+
 from utils.data_helpers import maybe_load_dotenv, iso_utc, csv_bytes_any, init_session_state
+from utils.fetch_throttle import TokenBucket, SharedBudget
 from utils.langfuse_api import fetch_traces_window, fetch_user_first_seen, invalidate_user_first_seen_cache, get_langfuse_headers
 from utils.trace_parsing import (
     normalize_trace_format,
@@ -456,6 +459,22 @@ section[data-testid="stSidebar"] div[data-testid="stDownloadButton"] button:hove
                 key="stats_http_timeout_s",
                 help="If multi-month fetches time out, increase this (e.g. 120-300s).",
             )
+            stats_req_per_sec = st.number_input(
+                "Max requests/sec",
+                min_value=1,
+                max_value=50,
+                value=10,
+                key="stats_req_per_sec",
+                help="Global rate limit across all parallel workers.",
+            )
+            stats_req_burst = st.number_input(
+                "Burst capacity",
+                min_value=1,
+                max_value=20,
+                value=3,
+                key="stats_req_burst",
+                help="Max requests that can fire instantly before throttling.",
+            )
 
         base_thread_url = f"https://www.{'staging.' if environment == 'staging' else ''}globalnaturewatch.org/app/threads"
 
@@ -510,6 +529,8 @@ section[data-testid="stSidebar"] div[data-testid="stDownloadButton"] button:hove
             stats_max_traces=int(stats_max_traces),
             stats_http_timeout_s=float(stats_http_timeout_s),
             stats_parallel_workers=int(stats_parallel_workers),
+            stats_req_per_sec=float(stats_req_per_sec),
+            stats_req_burst=int(stats_req_burst),
             fetch_status=fetch_status,
         )
 
@@ -528,6 +549,8 @@ def _handle_fetch(
     stats_max_traces: int,
     stats_http_timeout_s: float,
     stats_parallel_workers: int,
+    stats_req_per_sec: float,
+    stats_req_burst: int,
     fetch_status: Any,
 ) -> None:
     """Handle the fetch traces button click."""
@@ -555,6 +578,8 @@ def _handle_fetch(
             stats_max_traces=stats_max_traces,
             stats_http_timeout_s=stats_http_timeout_s,
             stats_parallel_workers=stats_parallel_workers,
+            stats_req_per_sec=stats_req_per_sec,
+            stats_req_burst=stats_req_burst,
             fetch_status=fetch_status,
         )
     else:
@@ -568,6 +593,8 @@ def _handle_fetch(
             stats_page_size=stats_page_size,
             stats_max_traces=stats_max_traces,
             stats_http_timeout_s=stats_http_timeout_s,
+            stats_req_per_sec=stats_req_per_sec,
+            stats_req_burst=stats_req_burst,
             fetch_status=fetch_status,
         )
 
@@ -606,6 +633,7 @@ def _build_fetch_warning(
     early_stop_chunks = 0
     page_limit_chunks = 0
     stopped_reasons: list[str] = []
+    missing_ranges: list[str] = []
 
     if isinstance(fetch_debug, dict) and isinstance(fetch_debug.get("chunks"), list):
         for c in fetch_debug.get("chunks") or []:
@@ -613,6 +641,9 @@ def _build_fetch_warning(
                 continue
             if c.get("error"):
                 failed_chunks += 1
+                _start = c.get("start", "?")
+                _end = c.get("end", "?")
+                missing_ranges.append(f"{_start} → {_end}")
                 continue
             dbg = c.get("debug")
             if isinstance(dbg, dict):
@@ -620,6 +651,9 @@ def _build_fetch_warning(
                 if isinstance(reason, str) and reason.strip():
                     early_stop_chunks += 1
                     stopped_reasons.append(reason.strip())
+                    _start = c.get("start", "?")
+                    _end = c.get("end", "?")
+                    missing_ranges.append(f"{_start} → {_end} (partial)")
                 if dbg.get("stopped_due_to_page_limit"):
                     page_limit_chunks += 1
 
@@ -653,6 +687,10 @@ def _build_fetch_warning(
         lines.append(f"Hit max traces limit: {int(stats_max_traces):,}")
     if single_reason:
         lines.append(f"Stopped early: {single_reason}")
+    if missing_ranges:
+        lines.append(f"Missing/incomplete date ranges: {', '.join(missing_ranges[:5])}")
+        if len(missing_ranges) > 5:
+            lines.append(f"  … and {len(missing_ranges) - 5} more")
     if stopped_reasons:
         uniq = []
         seen = set()
@@ -680,6 +718,8 @@ def _fetch_chunked(
     stats_max_traces: int,
     stats_http_timeout_s: float,
     stats_parallel_workers: int,
+    stats_req_per_sec: float,
+    stats_req_burst: int,
     fetch_status: Any,
 ) -> list[dict[str, Any]]:
     """Fetch traces in chunks for large date ranges."""
@@ -691,6 +731,10 @@ def _fetch_chunked(
         chunks.append((idx, current_start, current_end))
         current_start = current_end + timedelta(days=1)
         idx += 1
+
+    # Shared rate limiter + trace budget across all workers
+    rate_limiter = TokenBucket(rate=stats_req_per_sec, capacity=stats_req_burst)
+    budget = SharedBudget(total=stats_max_traces)
 
     def fetch_chunk(chunk_info: tuple[int, date, date]) -> tuple[int, date, date, list[dict[str, Any]], dict[str, Any]]:
         chunk_idx, chunk_start, chunk_end = chunk_info
@@ -707,19 +751,57 @@ def _fetch_chunked(
             page_size=stats_page_size,
             page_limit=stats_page_limit,
             max_traces=stats_max_traces,
-            retry=2,
-            backoff=0.5,
+            retry=4,
+            backoff=1.0,
             http_timeout_s=stats_http_timeout_s,
             debug_out=chunk_debug,
+            rate_limiter=rate_limiter,
+            budget=budget,
         )
         return (chunk_idx, chunk_start, chunk_end, chunk_traces, chunk_debug)
 
     all_traces: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
-    fetch_debug: dict[str, Any] = {"chunks": [], "total_traces": 0, "parallel_workers": stats_parallel_workers}
+    fetch_debug: dict[str, Any] = {
+        "chunks": [],
+        "total_traces": 0,
+        "parallel_workers": stats_parallel_workers,
+        "rate_limit_req_per_sec": stats_req_per_sec,
+        "rate_limit_burst": stats_req_burst,
+    }
     completed_count = 0
+    failed_count = 0
+    fetch_start = time_mod.monotonic()
+    # Rolling window for recent throughput (last N chunk completions)
+    _recent_completions: list[tuple[float, int]] = []  # (monotonic_time, cumulative_traces)
 
-    with fetch_status.status(f"Fetching traces in {len(chunks)} chunks of 3 days ({stats_parallel_workers} parallel)...", expanded=True) as status:
+    def _format_eta(remaining_chunks: int, recent: list[tuple[float, int]]) -> str:
+        """Estimate time remaining from rolling chunk throughput."""
+        if len(recent) < 2 or remaining_chunks <= 0:
+            return ""
+        t0, n0 = recent[0]
+        t1, n1 = recent[-1]
+        dt = t1 - t0
+        dn = n1 - n0
+        if dt <= 0 or dn <= 0:
+            return ""
+        # Average traces per second over the rolling window
+        traces_per_s = dn / dt
+        # Average traces per chunk over the rolling window
+        chunks_in_window = len(recent) - 1
+        traces_per_chunk = dn / chunks_in_window if chunks_in_window > 0 else 0
+        if traces_per_chunk <= 0:
+            return ""
+        remaining_traces = traces_per_chunk * remaining_chunks
+        eta_s = remaining_traces / traces_per_s
+        if eta_s < 60:
+            return f"~{eta_s:.0f}s left"
+        elif eta_s < 3600:
+            return f"~{eta_s / 60:.1f}m left"
+        return f"~{eta_s / 3600:.1f}h left"
+
+    total_chunks = len(chunks)
+    with fetch_status.status(f"Fetching traces in {total_chunks} chunks ({stats_parallel_workers} workers, {stats_req_per_sec:.0f} req/s)…", expanded=True) as status:
         with ThreadPoolExecutor(max_workers=stats_parallel_workers) as executor:
             futures = {executor.submit(fetch_chunk, chunk): chunk for chunk in chunks}
 
@@ -745,8 +827,38 @@ def _fetch_chunked(
                         "debug": chunk_debug,
                     })
 
-                    status.update(label=f"Completed {completed_count}/{len(chunks)} chunks ({len(all_traces)} traces so far)")
+                    # Rolling throughput window (keep last 8 data points)
+                    now = time_mod.monotonic()
+                    _recent_completions.append((now, len(all_traces)))
+                    if len(_recent_completions) > 8:
+                        _recent_completions.pop(0)
+
+                    elapsed = now - fetch_start
+                    rate = len(all_traces) / elapsed if elapsed > 0 else 0
+                    remaining = total_chunks - completed_count
+                    eta = _format_eta(remaining, _recent_completions)
+                    fail_note = f" ⚠️ {failed_count} failed" if failed_count else ""
+                    eta_note = f" · {eta}" if eta else ""
+
+                    status.update(
+                        label=(
+                            f"Chunk {completed_count}/{total_chunks}"
+                            f" — {len(all_traces):,} traces ({rate:.0f}/s)"
+                            f"{eta_note}{fail_note}"
+                        )
+                    )
+
+                    # If global budget exhausted, cancel remaining futures
+                    if budget.exhausted():
+                        for f in futures:
+                            f.cancel()
+                        status.update(
+                            label=f"Global trace limit reached ({stats_max_traces:,}). {len(all_traces):,} traces collected."
+                        )
+                        break
+
                 except Exception as e:
+                    failed_count += 1
                     chunk_info = futures[future]
                     fetch_debug["chunks"].append({
                         "chunk": chunk_info[0],
@@ -754,10 +866,21 @@ def _fetch_chunked(
                         "end": chunk_info[2].isoformat(),
                         "error": str(e),
                     })
-                    status.update(label=f"Chunk {chunk_info[0]} failed: {e}")
+                    remaining = total_chunks - completed_count
+                    status.update(
+                        label=(
+                            f"Chunk {completed_count}/{total_chunks}"
+                            f" — ⚠️ chunk {chunk_info[0]} failed ({chunk_info[1]}→{chunk_info[2]})"
+                        )
+                    )
 
         fetch_debug["total_traces"] = len(all_traces)
-        status.update(label=f"Fetched {len(all_traces)} total traces from {len(chunks)} chunks", state="complete")
+        elapsed = time_mod.monotonic() - fetch_start
+        fail_summary = f" ({failed_count} chunks failed)" if failed_count else ""
+        status.update(
+            label=f"Fetched {len(all_traces):,} traces from {total_chunks} chunks in {elapsed:.1f}s{fail_summary}",
+            state="complete",
+        )
 
     st.session_state.fetch_debug = fetch_debug
     return all_traces
@@ -773,14 +896,59 @@ def _fetch_single(
     stats_page_size: int,
     stats_max_traces: int,
     stats_http_timeout_s: float,
+    stats_req_per_sec: float,
+    stats_req_burst: int,
     fetch_status: Any,
 ) -> list[dict[str, Any]]:
     """Fetch traces in a single request for small date ranges."""
     from_iso = iso_utc(datetime.combine(start_date, time.min).replace(tzinfo=timezone.utc))
     to_iso = iso_utc(datetime.combine(end_date, time.max).replace(tzinfo=timezone.utc))
 
-    with fetch_status.status("Fetching traces...", expanded=False):
+    rate_limiter = TokenBucket(rate=stats_req_per_sec, capacity=stats_req_burst)
+
+    with fetch_status.status("Fetching traces...", expanded=True) as status:
         fetch_debug: dict[str, Any] = {}
+        fetch_start = time_mod.monotonic()
+        # Track recent page completions for rolling throughput / ETA
+        _page_times: list[tuple[float, int]] = []  # (monotonic, traces_so_far)
+
+        def on_progress(pages_done: int, traces_so_far: int):
+            now = time_mod.monotonic()
+            elapsed = now - fetch_start
+            _page_times.append((now, traces_so_far))
+            if len(_page_times) > 10:
+                _page_times.pop(0)
+
+            # Rolling throughput from recent pages
+            if len(_page_times) >= 2:
+                dt = _page_times[-1][0] - _page_times[0][0]
+                dn = _page_times[-1][1] - _page_times[0][1]
+                recent_rate = dn / dt if dt > 0 else 0
+            else:
+                recent_rate = traces_so_far / elapsed if elapsed > 0 else 0
+
+            # ETA: we don't know total pages, but we know page_limit is the upper bound.
+            # Use traces_per_page to estimate remaining pages.
+            traces_per_page = traces_so_far / pages_done if pages_done > 0 else 0
+            # If the last page was full, there's probably more data.
+            # Estimate remaining time from recent rate.
+            eta_str = ""
+            if recent_rate > 0 and traces_so_far < stats_max_traces:
+                # Rough: assume we'll fetch up to max_traces or run out of pages
+                remaining_traces = stats_max_traces - traces_so_far
+                remaining_pages = stats_page_limit - pages_done
+                if remaining_pages > 0 and traces_per_page > 0:
+                    est_traces_left = min(remaining_traces, remaining_pages * traces_per_page)
+                    eta_s = est_traces_left / recent_rate
+                    if eta_s < 60:
+                        eta_str = f" · ~{eta_s:.0f}s left"
+                    elif eta_s < 3600:
+                        eta_str = f" · ~{eta_s / 60:.1f}m left"
+
+            status.update(
+                label=f"Page {pages_done} — {traces_so_far:,} traces ({recent_rate:.0f}/s){eta_str}",
+            )
+
         traces = fetch_traces_window(
             base_url=base_url,
             headers=headers,
@@ -790,12 +958,18 @@ def _fetch_single(
             page_size=stats_page_size,
             page_limit=stats_page_limit,
             max_traces=stats_max_traces,
-            retry=2,
-            backoff=0.5,
+            retry=4,
+            backoff=1.0,
             http_timeout_s=stats_http_timeout_s,
             debug_out=fetch_debug,
+            rate_limiter=rate_limiter,
+            on_progress=on_progress,
         )
-        fetch_status.status(f"Fetched {len(traces)} traces", state="complete", expanded=False)
+        elapsed = time_mod.monotonic() - fetch_start
+        status.update(
+            label=f"Fetched {len(traces):,} traces in {elapsed:.1f}s",
+            state="complete",
+        )
 
     st.session_state.fetch_debug = fetch_debug
     return traces
