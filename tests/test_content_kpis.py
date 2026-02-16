@@ -183,6 +183,69 @@ class TestContentKPIs(unittest.TestCase):
         self.assertNotEqual(row["answer_type"], "model_error")
         self.assertNotEqual(row["completion_state"], "error")
 
+
+    def test_model_error_detects_technical_error_multilingual(self):
+        traces = [
+            {
+                "id": "t_tech_err_en",
+                "timestamp": "2026-01-05T00:01:00Z",
+                "sessionId": "s6",
+                "userId": "u6",
+                "input": {
+                    "messages": [{"role": "user", "content": "Show me alerts in Brazil"}]
+                },
+                "output": {
+                    "messages": [
+                        {
+                            "role": "assistant",
+                            "content": "Sorry — a technical error occurred while processing your request.",
+                        }
+                    ]
+                },
+                "metadata": {"thread_id": "th6a"},
+            },
+            {
+                "id": "t_tech_err_es",
+                "timestamp": "2026-01-05T00:02:00Z",
+                "sessionId": "s6",
+                "userId": "u6",
+                "input": {
+                    "messages": [{"role": "user", "content": "Muestra alertas en Brasil"}]
+                },
+                "output": {
+                    "messages": [
+                        {
+                            "role": "assistant",
+                            "content": "Lo siento, ocurrió un error técnico al procesar tu solicitud.",
+                        }
+                    ]
+                },
+                "metadata": {"thread_id": "th6b"},
+            },
+            {
+                "id": "t_tech_err_pt",
+                "timestamp": "2026-01-05T00:03:00Z",
+                "sessionId": "s6",
+                "userId": "u6",
+                "input": {
+                    "messages": [{"role": "user", "content": "Mostre alertas no Brasil"}]
+                },
+                "output": {
+                    "messages": [
+                        {
+                            "role": "assistant",
+                            "content": "Desculpe, ocorreu um erro técnico ao processar sua solicitação.",
+                        }
+                    ]
+                },
+                "metadata": {"thread_id": "th6c"},
+            },
+        ]
+
+        out = compute_derived_interactions(traces)
+        self.assertTrue((out["answer_type"] == "model_error").all())
+        self.assertTrue((out["completion_state"] == "error").all())
+
     def test_polite_follow_up_question_does_not_trigger_needs_user_input(self):
         """Regression: trailing friendly questions shouldn't flip into needs_user_input."""
         traces = [
@@ -237,6 +300,34 @@ class TestContentKPIs(unittest.TestCase):
         row = compute_derived_interactions(traces).iloc[0]
         self.assertEqual(row["intent_primary"], "conceptual_or_capability")
         self.assertFalse(bool(row["requires_aoi"]))
+
+
+    def test_dataset_list_prompt_classified_as_conceptual(self):
+        traces = [
+            {
+                "id": "t_ds_list",
+                "timestamp": "2026-01-07T01:00:00Z",
+                "sessionId": "s8",
+                "userId": "u8",
+                "input": {
+                    "messages": [
+                        {"role": "user", "content": "What datasets are available in GNW?"}
+                    ]
+                },
+                "output": {
+                    "messages": [
+                        {"role": "assistant", "content": "Here are some datasets we support..."}
+                    ]
+                },
+                "metadata": {"thread_id": "th8b"},
+            }
+        ]
+
+        row = compute_derived_interactions(traces).iloc[0]
+        self.assertEqual(row["intent_primary"], "conceptual_or_capability")
+        self.assertFalse(bool(row["requires_aoi"]))
+        self.assertFalse(bool(row["requires_time_range"]))
+        self.assertFalse(bool(row["requires_dataset"]))
 
     def test_raw_data_dict_is_detected_as_analysis_executed(self):
         traces = [
@@ -525,6 +616,35 @@ class TestContentKPIs(unittest.TestCase):
                         {
                             "role": "assistant",
                             "content": "I do not have access to soil quality data in my available datasets.",
+                        }
+                    ]
+                },
+            }
+        ]
+        out = compute_derived_interactions(traces)
+        self.assertEqual(out.loc[0, "answer_type"], "no_data")
+        self.assertEqual(out.loc[0, "completion_state"], "no_data")
+
+
+    def test_no_data_detects_no_layer_dataset_phrase(self):
+        traces = [
+            {
+                "id": "t_no_layer",
+                "timestamp": "2025-01-01T00:00:00Z",
+                "sessionId": "s1",
+                "thread_id": "th1",
+                "userId": "u1",
+                "level": "info",
+                "errorCount": 0,
+                "latency": 1.0,
+                "input_tokens": 10,
+                "output_tokens": 20,
+                "input": {"messages": [{"type": "human", "content": "Do we have soil quality data?"}]},
+                "output": {
+                    "messages": [
+                        {
+                            "role": "assistant",
+                            "content": "I don't have a layer for soil quality in my available datasets.",
                         }
                     ]
                 },

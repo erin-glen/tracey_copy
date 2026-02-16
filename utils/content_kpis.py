@@ -466,6 +466,24 @@ def _looks_like_conceptual_or_capability(prompt: str) -> bool:
     ):
         return True
 
+    # Dataset catalog / availability questions.
+    #
+    # These often use the same verbs as data intents ("list", "show"), but they
+    # are primarily about what *exists* in GNW rather than requesting an analysis.
+    # Classify as conceptual/capability to avoid mis-scoring missing AOI/time/dataset.
+    if re.search(
+        r"\b(available\s+datasets?|available\s+layers?|dataset\s+list|layer\s+list|"
+        r"datasets?\s+available|layers?\s+available|data\s+catalog|dataset\s+catalog)\b",
+        p,
+    ):
+        return True
+    if re.search(
+        r"\b(list|show|what|which)\b.{0,80}\b(datasets?|data\s*sets?|layers?)\b.{0,80}\b(available|"
+        r"do you have|are there|are available|supported|exist|in gnw|on gnw)\b",
+        p,
+    ):
+        return True
+
     # Data provenance / metadata questions
     if re.search(
         r"\b(where does .* data come from|data sources?|sources? of (?:the )?data|sources? of (?:the )?dataset|dataset sources?|citations?|cite|references?|fuentes? de datos|de d[oó]nde vienen los datos|origem dos dados|sumber data)\b",
@@ -827,8 +845,12 @@ def _answer_type(
         return "empty_or_short"
 
     # Strong system / processing failure markers (text-only fallback)
+    #
+    # NOTE: We intentionally *do not* treat generic uses of "error" as a model error.
+    # These patterns are constrained to technical/system failure phrasing.
     if re.search(
-        r"\b(traceback|exception|internal error|unexpected error|something went wrong|technical (?:issue|problem)|service unavailable|timed out|timeout)\b",
+        r"\b(traceback|exception|internal error|unexpected error|something went wrong|service unavailable|timed out|timeout|"
+        r"technical (?:issue|problem|error)|(?:error|erro|problema|falha)\s+t[eé]cnic[oa])\b",
         t,
     ):
         return "model_error"
@@ -841,6 +863,7 @@ def _answer_type(
         r"cannot (?:find|locate)|can't (?:find|locate)|unable to (?:find|locate)|"
         r"(?:do not|don't|cannot|can't)\s+(?:currently\s+)?support|"
         r"(?:do not|don't|cannot|can't)\s+have\s+access|"
+        r"(?:do not|don't|cannot|can't)\s+have\s+(?:a|any)\s+(?:layer|dataset|data\s*set)\s+(?:for|covering|that\s+covers)|"
         r"not supported|unsupported|outside (?:our|the) coverage|outside coverage|"
         r"unable to (?:process|handle).{0,40}\b(?:global|world(?:wide)?|entire world|whole world|continent(?:al)?)\b|"
         r"\b(?:global|worldwide|continental|entire world|whole world)\b.{0,60}\b(?:not supported|unsupported|too large|can't|cannot|unable)\b)\b",
@@ -1077,19 +1100,11 @@ def _extract_codeact(output_obj: Dict[str, Any]) -> Dict[str, Any]:
         if is_code:
             code_blocks_count += 1
 
-    template_name = ""
-    for k in ("codeact_template_name", "template_name", "code_template", "template"):
-        v = output_obj.get(k)
-        if isinstance(v, str) and v.strip():
-            template_name = v.strip()
-            break
-
     return {
         "codeact_present": bool(parts),
         "codeact_parts_count": len(parts),
         "codeact_code_blocks_count": code_blocks_count,
         "codeact_decoded_chars_total": decoded_chars_total,
-        "codeact_template_name": template_name,
     }
 
 
@@ -1310,6 +1325,10 @@ def compute_derived_interactions(traces: list[dict[str, Any]]) -> pd.DataFrame:
                 "no data available",
                 "data is not available",
                 "not available for",
+                "don't have a layer",
+                "do not have a layer",
+                "don't have a dataset",
+                "do not have a dataset",
                 "couldn't find data",
                 "could not find data",
                 "unable to find",
