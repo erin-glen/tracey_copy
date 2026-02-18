@@ -151,6 +151,8 @@ def current_human_prompt(row: dict[str, Any]) -> str:
     """Extract the current (last) human/user message from a trace input."""
     input_obj = _as_dict(row.get("input"))
     msgs = (input_obj.get("messages") or [])
+    if not isinstance(msgs, list):
+        return ""
     for m in reversed(msgs):
         if _is_user_msg(m):
             t = _msg_text(m.get("content"))
@@ -168,14 +170,16 @@ def slice_output_to_current_turn(
         output_obj = _as_dict(trace.get("output"))
         msgs = (output_obj.get("messages") or [])
     if not isinstance(msgs, list):
-        return msgs
+        return []
+
+    clean_msgs: list[dict[str, Any]] = [m for m in msgs if isinstance(m, dict)]
 
     cur_prompt = current_human_prompt(trace)
     if not cur_prompt:
-        return msgs
+        return clean_msgs
 
     start_idx: int | None = None
-    for i, m in enumerate(msgs):
+    for i, m in enumerate(clean_msgs):
         if not _is_user_msg(m):
             continue
         text = _msg_text(m.get("content")).strip()
@@ -183,8 +187,8 @@ def slice_output_to_current_turn(
             start_idx = i
 
     if start_idx is None:
-        return msgs
-    return msgs[start_idx:]
+        return clean_msgs
+    return clean_msgs[start_idx:]
 
 
 def current_turn_ai_message(row: dict[str, Any]) -> str:
@@ -193,6 +197,9 @@ def current_turn_ai_message(row: dict[str, Any]) -> str:
     if isinstance(out_msgs, list):
         for m in reversed(out_msgs):
             if _is_ai_msg(m):
+                t = m.get("content")
+                if isinstance(t, str) and t.strip():
+                    return t.strip()
                 t = _msg_text(m.get("content"))
                 if t and t.strip():
                     return t.strip()
