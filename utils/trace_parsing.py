@@ -79,7 +79,7 @@ def parse_trace_dt(row: dict[str, Any]) -> datetime | None:
 
 
 def _msg_text(content: Any) -> str:
-    """Extract text from message content (string or list of content blocks)."""
+    """Extract text from message content (string, dict, or list of content blocks)."""
     if isinstance(content, str):
         return content
     if isinstance(content, dict):
@@ -123,6 +123,51 @@ def _is_tool_msg(msg: Any) -> bool:
     return _msg_role(msg) in {"tool", "function"}
 
 
+def _is_truthy_flag(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "active", "current"}
+    return False
+
+
+def _find_active_turn_window(msgs: list[dict[str, Any]]) -> tuple[int | None, int | None]:
+    """Find current-turn message bounds using common active-turn markers."""
+    if not msgs:
+        return None, None
+
+    flagged_idxs: list[int] = []
+    for i, m in enumerate(msgs):
+        candidates = [
+            m.get("active_turn"),
+            m.get("is_active_turn"),
+            m.get("active"),
+            m.get("is_active"),
+            m.get("current_turn"),
+        ]
+        meta = m.get("metadata") if isinstance(m.get("metadata"), dict) else {}
+        candidates.extend(
+            [
+                meta.get("active_turn"),
+                meta.get("is_active_turn"),
+                meta.get("active"),
+                meta.get("is_active"),
+                meta.get("current_turn"),
+            ]
+        )
+        if any(_is_truthy_flag(v) for v in candidates):
+            flagged_idxs.append(i)
+
+    if not flagged_idxs:
+        return None, None
+
+    start = min(flagged_idxs)
+    end = max(flagged_idxs)
+    return start, end
+
+
 def first_human_prompt(row: dict[str, Any]) -> str:
     """Extract the first human message from a trace's input."""
     input_obj = _as_dict(row.get("input"))
@@ -164,7 +209,10 @@ def current_human_prompt(row: dict[str, Any]) -> str:
 def slice_output_to_current_turn(
     trace: dict[str, Any], output_msgs: list[Any] | None = None
 ) -> list[Any]:
-    """Slice output.messages to the current turn based on current input prompt."""
+    """Slice output.messages to the current turn.
+
+    Uses active-turn markers when available; otherwise falls back to current prompt matching.
+    """
     msgs = output_msgs
     if msgs is None:
         output_obj = _as_dict(trace.get("output"))
@@ -173,6 +221,11 @@ def slice_output_to_current_turn(
         return []
 
     clean_msgs: list[dict[str, Any]] = [m for m in msgs if isinstance(m, dict)]
+
+    start_idx, end_idx = _find_active_turn_window(clean_msgs)
+    if start_idx is not None and 0 <= start_idx < len(clean_msgs):
+        hi = end_idx if end_idx is not None and 0 <= end_idx < len(clean_msgs) else (len(clean_msgs) - 1)
+        return clean_msgs[start_idx : hi + 1]
 
     cur_prompt = current_human_prompt(trace)
     if not cur_prompt:
@@ -204,8 +257,8 @@ def current_turn_ai_message(row: dict[str, Any]) -> str:
                 if t and t.strip():
                     return t.strip()
 
-    output = row.get("output")
-    if isinstance(output, dict):
+    output = _as_dict(row.get("output"))
+    if output:
         for k in ["response", "answer", "final", "text"]:
             v = output.get(k)
             if isinstance(v, str) and v.strip():
