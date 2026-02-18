@@ -377,18 +377,20 @@ def fetch_scores_by_queue(
     http_timeout_s: float = 30,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Fetch scores filtered by annotation queueId using the v2 API.
-    
+
     Returns a tuple of (scores_list, metadata_dict).
     Metadata includes totalCount and pagination info.
     """
     url = f"{base_url.rstrip('/')}/api/public/v2/scores"
     all_scores: list[dict[str, Any]] = []
     meta: dict[str, Any] = {"totalCount": 0, "page": page, "limit": limit}
-    
+
     current_page = page
+    qid = str(queue_id)
+
     while True:
         params: dict[str, Any] = {
-            "queueId": str(queue_id),
+            "queueId": qid,
             "page": int(current_page),
             "limit": int(limit),
         }
@@ -396,25 +398,44 @@ def fetch_scores_by_queue(
         _log_http(method="GET", url=url, params=params, json_payload=None, response=r)
         r.raise_for_status()
         data = r.json()
-       
-        if isinstance(data, dict):
-            meta["totalCount"] = data.get("meta", {}).get("totalCount", 0)
-            rows = data.get("data", [])
-        else:
-            rows = data if isinstance(data, list) else []
-        
-        if not rows:
+
+        if not isinstance(data, dict):
+            raise Exception(
+                f"Langfuse fetch_scores_by_queue returned unexpected payload type: {type(data).__name__}"
+            )
+
+        meta["totalCount"] = data.get("meta", {}).get("totalCount", 0)
+
+        raw_rows = data.get("data", [])
+        if not isinstance(raw_rows, list):
+            raw_rows = []
+
+        dict_rows = [x for x in raw_rows if isinstance(x, dict)]
+
+        def _meta_queue_id(row: dict[str, Any]) -> str | None:
+            md = row.get("metadata")
+            if isinstance(md, dict):
+                v = md.get("queue_id")
+                if v is None:
+                    return None
+                try:
+                    return str(v)
+                except Exception:
+                    return None
+            return None
+
+        # Safety: some Langfuse versions may ignore `queueId` filtering; fall back to metadata.queue_id if present.
+        has_metadata_queue_id = any(_meta_queue_id(x) is not None for x in dict_rows)
+        rows = [x for x in dict_rows if _meta_queue_id(x) == qid] if has_metadata_queue_id else dict_rows
+
+        all_scores.extend(rows)
+
+        # Stop only when the server returns a short page (or nothing). Do NOT stop on "no filtered rows".
+        if len(raw_rows) < int(limit):
             break
-            
-        for row in rows:
-            if isinstance(row, dict):
-                all_scores.append(row)
-        
-        if len(rows) < limit:
-            break
-            
+
         current_page += 1
-    
+
     meta["fetchedCount"] = len(all_scores)
     return all_scores, meta
 
