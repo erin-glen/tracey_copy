@@ -13,7 +13,6 @@ import streamlit as st
 from utils.config_utils import resolve_app_password
 from utils.data_helpers import maybe_load_dotenv, iso_utc, csv_bytes_any, init_session_state
 from utils.langfuse_api import (
-    clear_langfuse_disk_cache,
     fetch_traces_window,
     get_langfuse_headers,
 )
@@ -37,7 +36,7 @@ def check_authentication() -> bool:
     maybe_load_dotenv()
 
     try:
-        secrets_map: Mapping[str, Any] = st.secrets
+        secrets_map: Mapping[str, Any] = dict(st.secrets)
     except Exception:
         secrets_map = {}
     auth_resolved = resolve_app_password(st.session_state, secrets_map, os.environ)
@@ -87,7 +86,7 @@ def render_sidebar() -> dict[str, Any]:
     """Render the shared sidebar and return configuration dict."""
     maybe_load_dotenv()
     try:
-        secrets_map: Mapping[str, Any] = st.secrets
+        secrets_map: Mapping[str, Any] = dict(st.secrets)
     except Exception:
         secrets_map = {}
     auth_resolved = resolve_app_password(st.session_state, secrets_map, os.environ)
