@@ -140,10 +140,6 @@ __all__ = [
     "parse_trace_dt",
     "first_human_prompt",
     "final_ai_message",
-    "current_human_prompt",
-    "current_turn_ai_message",
-    "slice_output_to_current_turn",
-    "current_turn_prompt_answer",
     "classify_outcome",
     "extract_trace_context",
     "extract_tool_calls_and_results",
@@ -214,4 +210,9 @@ __all__ = [
     "get_app_config",
     "configure_page",
     "render_glossary_popover",
+    # Shared UI extras
+    "current_human_prompt",
+    "current_turn_ai_message",
+    "slice_output_to_current_turn",
+    "current_turn_prompt_answer",
 ]
