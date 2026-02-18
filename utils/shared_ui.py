@@ -102,6 +102,7 @@ def render_sidebar() -> dict[str, Any]:
             "start_date": default_start,
             "end_date": default_end,
             "use_date_filter": True,
+            "stats_use_disk_cache": True,
         }
     )
 
@@ -328,24 +329,31 @@ section[data-testid="stSidebar"] div[data-testid="stDownloadButton"] button:hove
             )
 
         with st.expander("🧰 Cache", expanded=False):
-            st.checkbox("Use disk cache", value=True, key="stats_use_disk_cache")
+            st.checkbox(
+                "Use disk cache",
+                value=bool(st.session_state.get("stats_use_disk_cache", True)),
+                key="stats_use_disk_cache",
+                help="If enabled, trace fetching may use a local disk cache to speed up repeated queries.",
+            )
             if st.button("🧹 Clear Langfuse disk cache", key="clear_langfuse_disk_cache_btn"):
-                result = clear_langfuse_disk_cache()
-                st.success(
-                    f"Cleared Langfuse disk cache ({result.get('files_removed', 0)} files removed, "
-                    f"{result.get('errors', 0)} errors)."
-                )
-                st.session_state.pop("fetch_debug", None)
-                st.session_state.stats_traces = []
-                st.session_state.pop("content_kpis_df", None)
-                st.session_state.pop("content_kpis_derived", None)
-                st.session_state.pop("content_kpis_summary", None)
-                st.session_state.pop("content_kpis_slices", None)
-                st.session_state.pop("thread_qa_thread_df", None)
-                st.session_state.pop("thread_qa_fingerprint", None)
-                st.session_state.pop("codeact_qaqc_df", None)
-                st.session_state.pop("codeact_qaqc_fingerprint", None)
-                st.rerun()
+                try:
+                    from utils.langfuse_api import clear_langfuse_disk_cache  # local import for compatibility
+
+                    result = clear_langfuse_disk_cache()
+                    st.success(
+                        f"Cleared Langfuse disk cache ({result.get('files_removed', 0)} files removed, "
+                        f"{result.get('errors', 0)} errors)."
+                    )
+                    st.session_state.pop("fetch_debug", None)
+                    st.session_state._last_fetch_summary = None
+                    st.session_state.stats_traces_raw = []
+                    st.session_state.stats_traces = []
+                    st.session_state._trace_filter_key = None
+                    st.session_state.analytics_user_first_seen = None
+                    st.session_state.analytics_user_first_seen_debug = None
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Could not clear Langfuse disk cache: {e}")
 
         base_thread_url = f"https://www.{'staging.' if environment == 'staging' else ''}globalnaturewatch.org/app/threads"
 
@@ -496,7 +504,7 @@ def _fetch_chunked(
         if supports_debug_out:
             call_kwargs["debug_out"] = chunk_debug
         if supports_use_disk_cache:
-            call_kwargs["use_disk_cache"] = st.session_state.get("stats_use_disk_cache", True)
+            call_kwargs["use_disk_cache"] = bool(st.session_state.get("stats_use_disk_cache", True))
 
         chunk_traces = fetch_traces_window(**call_kwargs)
         return (chunk_idx, chunk_start, chunk_end, chunk_traces, chunk_debug)
@@ -597,7 +605,7 @@ def _fetch_single(
         if supports_debug_out:
             call_kwargs["debug_out"] = fetch_debug
         if supports_use_disk_cache:
-            call_kwargs["use_disk_cache"] = st.session_state.get("stats_use_disk_cache", True)
+            call_kwargs["use_disk_cache"] = bool(st.session_state.get("stats_use_disk_cache", True))
 
         traces = fetch_traces_window(**call_kwargs)
         fetch_status.status(f"Fetched {len(traces)} traces", state="complete", expanded=False)
