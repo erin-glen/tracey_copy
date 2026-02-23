@@ -21,7 +21,7 @@ from utils.metrics_registry import METRICS, PAGES
 # IMPORTANT: Keep this path in sync with the actual glossary page filename.
 # This is used by `st.page_link` / `st.switch_page` so users can jump from
 # inline help to the full glossary (with deep-linking via query params).
-GLOSSARY_PAGE_PATH = "pages/0_#L01f4da_Metrics_Glossary.py"
+GLOSSARY_PAGE_PATH = "pages/0_📚_Metrics_Glossary.py"
 
 
 def _supports_popover() -> bool:
