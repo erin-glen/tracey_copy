@@ -44,11 +44,11 @@ def check_authentication() -> bool:
     maybe_load_dotenv()
     
     app_pw_info = resolve_app_password(
-        session_state=st.session_state,
-        secrets_map=getattr(st, "secrets", {}),
-        environ=os.environ,
+        st.session_state,
+        getattr(st, "secrets", {}),
+        os.environ,
     )
-    app_password = app_pw_info.get("app_password", "")
+    app_password = str(app_pw_info.get("password") or app_pw_info.get("app_password") or "")
     if "app_authenticated" not in st.session_state:
         st.session_state.app_authenticated = False
 
@@ -139,11 +139,11 @@ def render_sidebar() -> dict[str, Any]:
     """Render the shared sidebar and return configuration dict."""
     maybe_load_dotenv()
     app_pw_info = resolve_app_password(
-        session_state=st.session_state,
-        secrets_map=getattr(st, "secrets", {}),
-        environ=os.environ,
+        st.session_state,
+        getattr(st, "secrets", {}),
+        os.environ,
     )
-    app_password = app_pw_info.get("app_password", "")
+    app_password = str(app_pw_info.get("password") or app_pw_info.get("app_password") or "")
 
     default_end = date.today()
     default_start = default_end - timedelta(days=7)
@@ -1221,4 +1221,3 @@ def render_glossary_popover(title: str, glossary: dict[str, str], *, help_text: 
         keys = sorted(glossary.keys())
         choice = st.selectbox("Term", options=keys, index=0, key=f"_glossary_term_{title}")
         st.markdown(glossary.get(choice, ""))
-
