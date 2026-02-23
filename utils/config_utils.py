@@ -4,6 +4,16 @@ from collections.abc import Mapping
 from typing import Any
 
 
+def _safe_mapping_get(mapping: Mapping[str, Any] | None, key: str) -> Any:
+    """Safely call mapping.get while tolerating lazy mappings that can raise."""
+    if not isinstance(mapping, Mapping):
+        return None
+    try:
+        return mapping.get(key)
+    except Exception:
+        return None
+
+
 def normalize_langfuse_base_url(raw: str | None) -> str:
     """Normalize user-provided Langfuse base URL values."""
     if raw is None:
@@ -27,7 +37,7 @@ def get_nested(mapping: Mapping[str, Any] | None, path: tuple[str, ...]) -> Any:
     for key in path:
         if not isinstance(current, Mapping):
             return None
-        current = current.get(key)
+        current = _safe_mapping_get(current, key)
     return current
 
 
@@ -59,7 +69,7 @@ def resolve_langfuse_config(
     public_key, public_source = _resolve_value(
         [
             ("session", session_map.get("langfuse_public_key")),
-            ("secrets", secrets_map.get("LANGFUSE_PUBLIC_KEY")),
+            ("secrets", _safe_mapping_get(secrets_map, "LANGFUSE_PUBLIC_KEY")),
             ("secrets", get_nested(secrets_map, ("langfuse", "public_key"))),
             ("env", env_map.get("LANGFUSE_PUBLIC_KEY")),
         ]
@@ -67,7 +77,7 @@ def resolve_langfuse_config(
     secret_key, secret_source = _resolve_value(
         [
             ("session", session_map.get("langfuse_secret_key")),
-            ("secrets", secrets_map.get("LANGFUSE_SECRET_KEY")),
+            ("secrets", _safe_mapping_get(secrets_map, "LANGFUSE_SECRET_KEY")),
             ("secrets", get_nested(secrets_map, ("langfuse", "secret_key"))),
             ("env", env_map.get("LANGFUSE_SECRET_KEY")),
         ]
@@ -75,7 +85,7 @@ def resolve_langfuse_config(
     base_url_raw, base_source = _resolve_value(
         [
             ("session", session_map.get("langfuse_base_url")),
-            ("secrets", secrets_map.get("LANGFUSE_BASE_URL")),
+            ("secrets", _safe_mapping_get(secrets_map, "LANGFUSE_BASE_URL")),
             ("secrets", get_nested(secrets_map, ("langfuse", "base_url"))),
             ("env", env_map.get("LANGFUSE_BASE_URL")),
         ]
@@ -107,10 +117,10 @@ def resolve_app_password(
     password, source = _resolve_value(
         [
             ("session", session_map.get("app_password")),
-            ("secrets", secrets_map.get("APP_PASSWORD")),
+            ("secrets", _safe_mapping_get(secrets_map, "APP_PASSWORD")),
             ("secrets", get_nested(secrets_map, ("auth", "password"))),
             ("secrets", get_nested(secrets_map, ("auth", "APP_PASSWORD"))),
-            ("secrets", secrets_map.get("password")),
+            ("secrets", _safe_mapping_get(secrets_map, "password")),
             ("env", env_map.get("APP_PASSWORD")),
         ]
     )
