@@ -192,6 +192,7 @@ def render_metric_doc(metric_id: str, *, show_id: bool = True) -> None:
     spec_refs = doc.get("spec_refs") or []
     if isinstance(spec_refs, list) and spec_refs:
         with st.expander("Classification spec", expanded=False):
+            st.caption("Canonical full text lives in the page-level **Classification specs** section.")
             for sid in spec_refs:
                 sid = str(sid or "").strip()
                 if not sid:
@@ -202,24 +203,22 @@ def render_metric_doc(metric_id: str, *, show_id: bool = True) -> None:
                     continue
 
                 title = str(sdoc.get("name") or sid).strip()
-                with st.expander(title, expanded=False):
-                    md = str(sdoc.get("markdown") or "").strip()
-                    if md:
-                        st.markdown(md)
+                applies = sdoc.get("applies_to_metrics") or []
+                applies_n = len([mid for mid in applies if str(mid).strip()])
+                st.markdown(f"**{title}** (`{sid}`)")
+                st.caption(f"Used by {applies_n} metric(s).")
 
-                    s_code_refs = sdoc.get("code_refs") or []
-                    if isinstance(s_code_refs, list) and s_code_refs:
-                        st.markdown("**Code refs**")
-                        for ref in s_code_refs:
-                            if str(ref).strip():
-                                st.markdown(f"- `{ref}`")
+                s_code_refs = [str(ref).strip() for ref in (sdoc.get("code_refs") or []) if str(ref).strip()]
+                if s_code_refs:
+                    st.markdown("**Code refs**")
+                    for ref in s_code_refs:
+                        st.markdown(f"- `{ref}`")
 
-                    test_refs = sdoc.get("test_refs") or []
-                    if isinstance(test_refs, list) and test_refs:
-                        st.markdown("**Executable spec tests**")
-                        for tref in test_refs:
-                            if str(tref).strip():
-                                st.markdown(f"- `{tref}`")
+                test_refs = [str(tref).strip() for tref in (sdoc.get("test_refs") or []) if str(tref).strip()]
+                if test_refs:
+                    st.markdown("**Executable spec tests**")
+                    for tref in test_refs:
+                        st.markdown(f"- `{tref}`")
 
     caveats = doc.get("caveats") or []
     if isinstance(caveats, list) and caveats:

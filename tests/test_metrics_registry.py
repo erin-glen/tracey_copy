@@ -29,6 +29,7 @@ METRICS = metrics_mod.METRICS
 PAGES = metrics_mod.PAGES
 CLASSIFICATION_SPECS = getattr(metrics_mod, "CLASSIFICATION_SPECS", {})
 validate_metrics_registry = validation_mod.validate_metrics_registry
+validate_classification_specs = validation_mod.validate_classification_specs
 
 
 def test_metrics_registry_is_valid() -> None:
@@ -50,3 +51,25 @@ def test_metric_spec_refs_resolve_to_known_specs() -> None:
             sid = str(sid or "").strip()
             assert sid, f"Metric {metric_id!r} has an empty spec_refs entry"
             assert sid in CLASSIFICATION_SPECS, f"Metric {metric_id!r} references unknown spec_id: {sid!r}"
+
+
+def test_classification_specs_are_valid() -> None:
+    errors = validate_classification_specs(METRICS, CLASSIFICATION_SPECS)
+    assert not errors, "\n".join(["Classification spec validation errors:"] + [f"- {e}" for e in errors])
+
+
+def test_metric_spec_refs_are_bidirectionally_linked() -> None:
+    """Governance: metric spec_refs and spec applies_to_metrics should stay in sync."""
+    if not CLASSIFICATION_SPECS:
+        pytest.skip("No CLASSIFICATION_SPECS defined")
+
+    for metric_id, doc in METRICS.items():
+        for sid in doc.get("spec_refs") or []:
+            sid = str(sid or "").strip()
+            if not sid:
+                continue
+            applies = CLASSIFICATION_SPECS.get(sid, {}).get("applies_to_metrics") or []
+            assert metric_id in applies, (
+                f"Metric {metric_id!r} references spec {sid!r} but is missing from "
+                f"CLASSIFICATION_SPECS[{sid!r}]['applies_to_metrics']"
+            )
