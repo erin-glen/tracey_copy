@@ -17,7 +17,7 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
-from utils.metrics_registry import METRICS, PAGES
+from utils.metrics_registry import CLASSIFICATION_SPECS, METRICS, PAGES
 
 
 def _resolve_glossary_page_path() -> str:
@@ -129,6 +129,11 @@ def get_metric_doc(metric_id: str) -> dict[str, Any] | None:
     return METRICS.get(str(metric_id or "").strip())
 
 
+def get_classification_spec(spec_id: str) -> dict[str, Any] | None:
+    """Return a classification spec doc, if present."""
+    return CLASSIFICATION_SPECS.get(str(spec_id or "").strip())
+
+
 def render_metric_doc(metric_id: str, *, show_id: bool = True) -> None:
     """Render the full documentation for a metric inside the current container."""
     metric_id = str(metric_id or "").strip()
@@ -147,6 +152,24 @@ def render_metric_doc(metric_id: str, *, show_id: bool = True) -> None:
     if definition:
         st.markdown(definition)
 
+    # Data contract (denominator semantics)
+    data_contract_rows: list[tuple[str, str]] = []
+    for label, key in [
+        ("Population", "population"),
+        ("Numerator", "numerator"),
+        ("Denominator", "denominator"),
+        ("Unit", "unit"),
+        ("Method", "method"),
+    ]:
+        v = str(doc.get(key) or "").strip()
+        if v:
+            data_contract_rows.append((label, v))
+
+    if data_contract_rows:
+        with st.expander("Data contract", expanded=False):
+            for k, v in data_contract_rows:
+                st.markdown(f"**{k}:** {v}")
+
     formula = str(doc.get("formula") or "").strip()
     if formula:
         st.markdown("**How it's computed**")
@@ -156,6 +179,47 @@ def render_metric_doc(metric_id: str, *, show_id: bool = True) -> None:
     if provenance:
         st.markdown("**Where it comes from**")
         st.markdown(provenance)
+
+    # Code references
+    code_refs = doc.get("code_refs") or []
+    if isinstance(code_refs, list) and code_refs:
+        with st.expander("Code references", expanded=False):
+            for ref in code_refs:
+                if str(ref).strip():
+                    st.markdown(f"- `{ref}`")
+
+    # Classification specs (derived labels)
+    spec_refs = doc.get("spec_refs") or []
+    if isinstance(spec_refs, list) and spec_refs:
+        with st.expander("Classification spec", expanded=False):
+            for sid in spec_refs:
+                sid = str(sid or "").strip()
+                if not sid:
+                    continue
+                sdoc = get_classification_spec(sid)
+                if not sdoc:
+                    st.markdown(f"- `{sid}`")
+                    continue
+
+                title = str(sdoc.get("name") or sid).strip()
+                with st.expander(title, expanded=False):
+                    md = str(sdoc.get("markdown") or "").strip()
+                    if md:
+                        st.markdown(md)
+
+                    s_code_refs = sdoc.get("code_refs") or []
+                    if isinstance(s_code_refs, list) and s_code_refs:
+                        st.markdown("**Code refs**")
+                        for ref in s_code_refs:
+                            if str(ref).strip():
+                                st.markdown(f"- `{ref}`")
+
+                    test_refs = sdoc.get("test_refs") or []
+                    if isinstance(test_refs, list) and test_refs:
+                        st.markdown("**Executable spec tests**")
+                        for tref in test_refs:
+                            if str(tref).strip():
+                                st.markdown(f"- `{tref}`")
 
     caveats = doc.get("caveats") or []
     if isinstance(caveats, list) and caveats:
@@ -324,6 +388,31 @@ def render_metrics_glossary_page() -> None:
 
     df = df.sort_values(["category", "name"], na_position="last").reset_index(drop=True)
 
+    # Classification specs (derived-label documentation)
+    if CLASSIFICATION_SPECS:
+        st.markdown("### Classification specs")
+        st.caption(
+            "Deterministic label definitions used by one or more KPIs (e.g., Content KPIs completion_state). "
+            "These are paired with spec-by-example tests in `tests/`."
+        )
+        for sid, sdoc in CLASSIFICATION_SPECS.items():
+            title = str(sdoc.get("name") or sid).strip()
+            with st.expander(title, expanded=False):
+                md = str(sdoc.get("markdown") or "").strip()
+                if md:
+                    st.markdown(md)
+
+                applies = sdoc.get("applies_to_metrics") or []
+                if isinstance(applies, list) and applies:
+                    st.markdown("**Applies to metrics**")
+                    for mid in applies:
+                        mid = str(mid or "").strip()
+                        if not mid:
+                            continue
+                        mdoc = METRICS.get(mid)
+                        label = mdoc.get("name", mid) if isinstance(mdoc, dict) else mid
+                        st.markdown(f"- **{label}** (`{mid}`)")
+
     # Filters
     c1, c2 = st.columns([2, 1])
     with c1:
@@ -388,6 +477,7 @@ def render_metrics_glossary_page() -> None:
     export_payload = {
         "metrics": export_metrics,
         "pages": PAGES,
+        "classification_specs": CLASSIFICATION_SPECS,
     }
 
     full_json_bytes = json.dumps(export_payload, indent=2, sort_keys=True).encode("utf-8")
@@ -419,6 +509,7 @@ def render_metrics_glossary_page() -> None:
                 "used_in": ", ".join(doc.get("used_in") or []),
                 "code_refs": ", ".join(doc.get("code_refs") or []),
                 "caveats": " | ".join(doc.get("caveats") or []),
+                "spec_refs": ", ".join(doc.get("spec_refs") or []),
             }
         )
 

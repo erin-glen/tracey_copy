@@ -388,6 +388,7 @@ METRICS: dict[str, dict[str, Any]] = {
         "name": "Complete (scored)",
         "category": "Content KPIs · Deterministic",
         "definition": "Among *scored intents*, share of turns classified as `complete_answer`.",
+        "spec_refs": ["content_kpis_classification"],
         "population": 'Turns in scored intents',
         "numerator": "Turns where completion_state == 'complete_answer'",
         "denominator": 'Turns in scored intents',
@@ -406,6 +407,7 @@ METRICS: dict[str, dict[str, Any]] = {
         "name": "Needs input (scored)",
         "category": "Content KPIs · Deterministic",
         "definition": "Among *scored intents*, share of turns where the assistant asks for missing required info (AOI/time/dataset).",
+        "spec_refs": ["content_kpis_classification"],
         "population": 'Turns in scored intents',
         "numerator": "Turns where completion_state == 'needs_user_input'",
         "denominator": 'Turns in scored intents',
@@ -423,6 +425,7 @@ METRICS: dict[str, dict[str, Any]] = {
         "name": "Errors (scored)",
         "category": "Content KPIs · Deterministic",
         "definition": "Among *scored intents*, share of turns classified as `error` (missing/failed output).",
+        "spec_refs": ["content_kpis_classification"],
         "population": 'Turns in scored intents',
         "numerator": "Turns where completion_state == 'error'",
         "denominator": 'Turns in scored intents',
@@ -440,6 +443,7 @@ METRICS: dict[str, dict[str, Any]] = {
         "name": "Dataset identifiable (scored)",
         "category": "Content KPIs · Deterministic",
         "definition": "Among *scored intents*, share of turns where a dataset/layer can be identified in the structured output.",
+        "spec_refs": ["content_kpis_classification"],
         "population": 'Turns in scored intents',
         "numerator": 'Scored turns where dataset_struct is True',
         "denominator": 'Turns in scored intents',
@@ -457,6 +461,7 @@ METRICS: dict[str, dict[str, Any]] = {
     "citations_shown_rate_scored_intents": {
     "name": "Citations shown (scored)",
     "category": "Content KPIs · Global",
+    "spec_refs": ["content_kpis_classification"],
     "definition": (
         "Share of scored data interactions where the assistant included a user-visible citation in its response "
         "(e.g., URL/DOI or an explicit 'Source:' reference)."
@@ -478,6 +483,7 @@ METRICS: dict[str, dict[str, Any]] = {
 "citation_metadata_present_rate_scored_intents": {
     "name": "Citation metadata present (scored)",
     "category": "Content KPIs · Global",
+    "spec_refs": ["content_kpis_classification"],
     "definition": (
         "Share of scored data interactions where the tool output included structured citation metadata "
         "(e.g., dataset citation fields), regardless of whether it was rendered in the assistant's text."
@@ -500,6 +506,7 @@ METRICS: dict[str, dict[str, Any]] = {
         "name": "Threads ending in needs-input",
         "category": "Content KPIs · Deterministic",
         "definition": "Share of conversation threads whose *last* turn was classified as `needs_user_input`.",
+        "spec_refs": ["content_kpis_classification"],
         "population": 'Conversation threads in the loaded traces',
         "numerator": 'Threads whose last turn is needs_user_input',
         "denominator": 'Total threads',
@@ -871,6 +878,137 @@ METRICS: dict[str, dict[str, Any]] = {
         ],
         "used_in": ["CodeAct Templates"],
     },
+}
+
+
+# ---------------------------------------------------------------------------
+# Classification specs (executable documentation)
+# ---------------------------------------------------------------------------
+
+# These are human-readable specs for *derived labels* used by KPI computations.
+# They are meant to be paired with spec-by-example tests in `tests/`.
+
+CLASSIFICATION_SPECS: dict[str, dict[str, Any]] = {
+    "content_kpis_classification": {
+        "name": "Content KPIs: deterministic classification spec",
+        "applies_to_metrics": [
+            "complete_answer_rate_scored_intents",
+            "needs_user_input_rate_scored_intents",
+            "error_rate_scored_intents",
+            "global_dataset_identifiable_rate_scored_intents",
+            "citations_shown_rate_scored_intents",
+            "citation_metadata_present_rate_scored_intents",
+            "threads_ended_after_needs_user_input_rate",
+        ],
+        "markdown": """
+This spec documents the deterministic rules used to derive **Content KPI** labels.
+
+The implementation lives in `utils/content_kpis.py` and is enforced by the executable
+spec tests in `tests/test_content_kpis_classification_spec.py`.
+
+### Derived table
+Content KPIs are computed from a per-turn derived table produced by:
+
+- `compute_derived_interactions(traces)` → one row per prompt-bearing turn
+- `summarize_content(derived)` → KPI rates and denominators
+
+### Scored intents
+The headline Content KPIs are restricted to:
+
+`SCORED_INTENTS = {"trend_over_time", "data_lookup"}`
+
+Intent is inferred from the prompt text, **but can be re-cast** when the system clearly
+executed analysis (raw_data/charts) and returned a structured dataset:
+
+- if `intent_primary ∈ {other, parameter_refinement}` AND `analysis_executed == True` AND `dataset_struct == True`,
+  then `intent_primary` is set to `trend_over_time` (if prompt looks like a trend request) else `data_lookup`.
+
+### Structural flags (`*_struct`)
+Structural flags are extracted from tool output JSON (`output`):
+
+- `aoi_selected_struct`: True if output includes a selected AOI under `selected_aoi`/`selectedAOI`/`aoi`
+  with a non-empty name/id/gadm_id/etc.
+- `time_range_struct`: True if both `start_date` and `end_date` (or camelCase variants) are present.
+- `dataset_struct`: True if a dataset/layer name can be extracted from dataset/layer/collection containers.
+- `citations_struct`: True if output contains `citation`/`citations`/`sources`/`sourceUrls`/`references`.
+- `dataset_has_citation`: True if the dataset object contains a non-empty `citation(s)` string.
+
+### `answer_type` (coarse response outcome)
+`answer_type = _answer_type(response, response_missing, output_json_ok, level, errorCount)`
+
+Priority order:
+
+1) `missing_output` if the assistant response for the turn is missing.
+2) `model_error` if any of:
+   - Langfuse `level == ERROR`,
+   - invalid output JSON with `level == ERROR`,
+   - `errorCount > 0`,
+   - strong system-failure markers in the text (traceback/timeout/service unavailable/etc.).
+3) `empty_or_short` if stripped response length `< 20` characters.
+4) `no_data` if the response matches explicit no-results / unsupported-coverage patterns.
+5) `fallback` for meta disclaimers (e.g., "as an AI...", "can't access real time").
+6) otherwise `answer`.
+
+**Correction:** if `answer_type == no_data` but `analysis_executed == True`, the label is corrected to `answer`
+and `no_data_with_analysis=True` is set for QA filtering.
+
+### `needs_user_input`
+`needs_user_input, reason = _needs_user_input(response, requires, struct)`
+
+This is a **conservative, deterministic** signal. It triggers when either:
+
+- required fields are missing according to inferred `requires_*` flags **OR**
+- the response explicitly asks for missing AOI/time/dataset (regex-gated by domain terms), including AOI disambiguation.
+
+Reason codes:
+
+- `missing_aoi`, `missing_time`, `missing_dataset`, `multiple_missing`
+
+If the assistant explicitly asks, that asked-field reason is preferred over the inferred missing-required reason.
+
+### `completion_state` (the label used by Content KPIs)
+`completion_state, struct_good_trend, struct_good_lookup, struct_fail_reason = _completion_state(...)`
+
+Priority order:
+
+1) `error` if `answer_type ∈ {missing_output, model_error, empty_or_short}`.
+   - `struct_fail_reason` becomes the specific `answer_type` token.
+2) `needs_user_input` if `needs_user_input == True`.
+3) `no_data` if `answer_type == no_data`.
+4) `incomplete_answer` if intent is scored and any structural reasons apply:
+   - missing required AOI/time/dataset (`missing_aoi|missing_time|missing_dataset`)
+   - plus for `trend_over_time` with `requires_data == True`: `no_citation` if no citations and not needs_user_input
+5) `complete_answer` if `answer_type ∈ {answer, text_only}` and none of the above.
+6) otherwise `other`.
+
+`struct_fail_reason` is a `|`-joined list of failure tokens.
+
+### Citations used for completion
+The citation presence used in `completion_state` is:
+
+`citations_any = citations_struct OR citations_text OR dataset_has_citation`
+
+**Note:** `citations_text` currently scans **prompt + response** together (`combined = f"{prompt}\n{response}"`).
+This can credit user-provided citations; interpret "Citations shown" accordingly.
+
+### Thread grouping
+Thread-level Content KPIs group by `compute_thread_key()` priority:
+
+`thread_id → sessionId/session_id → trace_id → row index fallback`.
+""",
+        "code_refs": [
+            "utils.content_kpis.compute_derived_interactions",
+            "utils.content_kpis._extract_struct_flags",
+            "utils.content_kpis._infer_requires",
+            "utils.content_kpis._answer_type",
+            "utils.content_kpis._needs_user_input",
+            "utils.content_kpis._completion_state",
+            "utils.content_kpis.compute_thread_key",
+        ],
+        "test_refs": [
+            "tests/test_content_kpis_classification_spec.py",
+        ],
+    }
 }
 
 
