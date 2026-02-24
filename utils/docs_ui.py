@@ -387,31 +387,6 @@ def render_metrics_glossary_page() -> None:
 
     df = df.sort_values(["category", "name"], na_position="last").reset_index(drop=True)
 
-    # Classification specs (derived-label documentation)
-    if CLASSIFICATION_SPECS:
-        st.markdown("### Classification specs")
-        st.caption(
-            "Deterministic label definitions used by one or more KPIs (e.g., Content KPIs completion_state). "
-            "These are paired with spec-by-example tests in `tests/`."
-        )
-        for sid, sdoc in CLASSIFICATION_SPECS.items():
-            title = str(sdoc.get("name") or sid).strip()
-            with st.expander(title, expanded=False):
-                md = str(sdoc.get("markdown") or "").strip()
-                if md:
-                    st.markdown(md)
-
-                applies = sdoc.get("applies_to_metrics") or []
-                if isinstance(applies, list) and applies:
-                    st.markdown("**Applies to metrics**")
-                    for mid in applies:
-                        mid = str(mid or "").strip()
-                        if not mid:
-                            continue
-                        mdoc = METRICS.get(mid)
-                        label = mdoc.get("name", mid) if isinstance(mdoc, dict) else mid
-                        st.markdown(f"- **{label}** (`{mid}`)")
-
     # Filters
     c1, c2 = st.columns([2, 1])
     with c1:
@@ -467,6 +442,31 @@ def render_metrics_glossary_page() -> None:
     )
     with st.container(border=True):
         render_metric_doc(selected, show_id=True)
+
+    # Classification specs (derived-label documentation)
+    if CLASSIFICATION_SPECS:
+        st.markdown("### Classification specs")
+        st.caption(
+            "Deterministic label definitions used by one or more KPIs (e.g., Content KPIs completion_state). "
+            "These are paired with spec-by-example tests in `tests/`."
+        )
+        for sid, sdoc in CLASSIFICATION_SPECS.items():
+            title = str(sdoc.get("name") or sid).strip()
+            with st.expander(title, expanded=False):
+                md = str(sdoc.get("markdown") or "").strip()
+                if md:
+                    st.markdown(md)
+
+                applies = sdoc.get("applies_to_metrics") or []
+                if isinstance(applies, list) and applies:
+                    st.markdown("**Applies to metrics**")
+                    for mid in applies:
+                        mid = str(mid or "").strip()
+                        if not mid:
+                            continue
+                        mdoc = METRICS.get(mid)
+                        label = mdoc.get("name", mid) if isinstance(mdoc, dict) else mid
+                        st.markdown(f"- **{label}** (`{mid}`)")
 
     # Exports
     st.markdown("### Export")
