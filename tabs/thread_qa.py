@@ -43,9 +43,17 @@ def render(public_key: str, secret_key: str, base_url: str, base_thread_url: str
         }
     )
 
+    st.subheader("🧵 Thread QA")
+    st.caption("Thread-level QA rollups derived deterministically from the currently loaded traces.")
+    render_page_help("thread_qa", expanded=False)
+
     traces = st.session_state.get("stats_traces", [])
     if not traces:
-        st.info("Fetch traces in sidebar first")
+        st.info(
+            "Use the sidebar **🚀 Fetch traces** button to load data first. "
+            "Once traces are loaded, this page will summarize thread-level outcomes, "
+            "highlight conversations that need review, and provide exportable drilldowns."
+        )
         return
 
     normed = [normalize_trace_format(t) for t in traces]
@@ -72,11 +80,6 @@ def render(public_key: str, secret_key: str, base_url: str, base_thread_url: str
         st.session_state["thread_qa_fingerprint"] = fingerprint
 
     thread_df: pd.DataFrame = st.session_state.get("thread_qa_thread_df", pd.DataFrame())
-
-    st.subheader("🧵 Thread QA")
-    st.caption("Thread-level QA rollups derived deterministically from the currently loaded traces.")
-
-    render_page_help("thread_qa", expanded=False)
 
     threads_count = len(thread_df)
     ended_nui_count = int(thread_df["ended_after_needs_user_input"].sum()) if threads_count else 0
