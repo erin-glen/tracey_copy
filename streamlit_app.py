@@ -33,6 +33,11 @@ Quickly pull and explore traces from Langfuse. _Ta, Trace!_
 | 🧠 **Product Intelligence** | AI-powered insights and pattern discovery |
 | 🔎 **Trace Explorer** | Browse and filter individual traces |
 | 🔗 **Conversation Browser** | View full conversation threads |
+| 🧱 **Content KPIs** | Monitor content quality outcomes and KPI trends |
+| 🧵 **Thread QA** | Audit thread-level quality checks and outcomes |
+| 📦 **QA Samples** | Curated QA sample sets for quick review |
+| 🧩 **CodeAct QA** | QA workflows for CodeAct traces and outputs |
+| 📚 **Metrics Glossary** | Definitions and interpretation guidance for metrics |
 
 ### Current Session
 
